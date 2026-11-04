@@ -19,12 +19,16 @@ Ground rules:
   optional failover below only ever targets a sibling model of the SAME
   provider.
 
-Sources (fetched 2026-09-17):
+Sources (fetched 2026-09-17, image providers re-checked 2026-11-04):
   APIDot   https://apidot.ai/docs/gpt-5-5, /gpt-5-6, /claude-sonnet-5,
            /claude-opus-5, /gpt-image-2.5, /en/docs/generate-status,
            /en/docs/upload-stream, /en/docs/webhooks
   Kie.ai   https://docs.kie.ai/market/chat/gpt-5-5,
            https://docs.kie.ai/market/gpt/gpt-image-2-5-{flare,sunburst}-{text,image}-to-image
+  PoYo     https://docs.poyo.ai/api-manual/image-series/gpt-image-2-5-{flare,sunburst}
+           (the same submit / status / upload / balance contract as APIDot)
+  KovAPI   https://docs.kovapi.com/gpt-image-2.5-{flare,sunburst},
+           /guide/errors, /guide/billing, /api (OpenAI-style async image jobs)
 """
 
 from typing import Any, Optional
@@ -79,6 +83,37 @@ PROVIDERS: dict[str, dict] = {
         "key_setting": "kie_api_key",
         "key_label": "Kie.ai API Key",
         "accent": "#22c55e",
+    },
+    "poyo": {
+        "id": "poyo",
+        "label": "PoYo",
+        "tagline": "GPT Image 2.5 Flare and Sunburst on an APIDot-style async "
+                   "contract — webhook or polling delivery.",
+        "site": "https://poyo.ai/",
+        "docs_url": "https://docs.poyo.ai/",
+        "base_url": "https://api.poyo.ai",
+        # GET {base}/api/user/balance -> {"code":200,"data":{"credits_amount": int,
+        # "email": …}} — the same shape APIDot returns.
+        "balance_endpoint": "/api/user/balance",
+        "key_setting": "poyo_api_key",
+        "key_label": "PoYo API Key",
+        "accent": "#f59e0b",
+    },
+    "kovapi": {
+        "id": "kovapi",
+        "label": "KovAPI",
+        "tagline": "OpenAI-style image jobs, priced per resolution tier "
+                   "(1K $0.005 · 2K $0.03 · 4K $0.05).",
+        "site": "https://kovapi.com/",
+        "docs_url": "https://docs.kovapi.com/",
+        "base_url": "https://kovapi.com",
+        # GET {base}/v1/usage -> {"object":…, "balance":{"usd":…, "credits":…},
+        # "total":{…}, "today":{…}, "by_model":[…]}; 1 USD = 200 credits.
+        "balance_endpoint": "/v1/usage",
+        "balance_path": "balance.credits",
+        "key_setting": "kovapi_api_key",
+        "key_label": "KovAPI API Key",
+        "accent": "#0ea5e9",
     },
 }
 
@@ -221,6 +256,197 @@ def _apidot_image2_params():
                 show_if={"key": "size", "equals": "custom"}),
     ]
     return params
+
+
+# ── GPT Image 2.5 canvas rules (APIDot and PoYo document the same ones) ────────
+# Verbatim from both providers' pages (re-checked 2026-11-04):
+#   • "`auto` only supports 1K" / "Explicit size=auto is available only with 1K"
+#   • "Custom WIDTHxHEIGHT sizes require 2K or 4K. Both dimensions must be
+#     divisible by 16, the longest edge must not exceed 3840, the aspect ratio
+#     must not exceed 3:1, and total pixels must be between 655,360 and
+#     8,294,400. A 3840-pixel edge requires 4K."
+#   • "Transparent backgrounds require PNG or WebP."
+# Sending `auto` at 2K, or a 64×64 custom canvas, is a validation error that
+# fails every variation of every contest — so the rules are enforced on save
+# (apply_constraints) and again on the wire (image_providers).
+GPT25_SIZE_RULES = "gpt_image_25"
+GPT25_EDGE_MAX = 3840
+GPT25_PIXELS_MIN = 655_360
+GPT25_PIXELS_MAX = 8_294_400
+GPT25_RATIO_MAX = 3.0
+KOVAPI_SIZE_RULES = "kovapi"
+
+
+def _snap16(value: float) -> int:
+    return max(16, int(round(value / 16.0)) * 16)
+
+
+def gpt25_custom_size(width, height) -> tuple[int, int, list[str]]:
+    """
+    The nearest WIDTHxHEIGHT that satisfies every documented custom-size rule,
+    keeping the requested shape as closely as the rules allow.
+
+    Returns (width, height, notes); *notes* says what had to change, and is
+    empty when the request was already valid.
+    """
+    import math
+
+    notes: list[str] = []
+    try:
+        w, h = float(width), float(height)
+        if w <= 0 or h <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        w = h = 1024.0
+        notes.append("custom size was not a number — reset to 1024×1024")
+    requested = (w, h)
+
+    if w / h > GPT25_RATIO_MAX:
+        h = w / GPT25_RATIO_MAX
+        notes.append("aspect ratio limited to 3:1")
+    elif h / w > GPT25_RATIO_MAX:
+        w = h / GPT25_RATIO_MAX
+        notes.append("aspect ratio limited to 1:3")
+
+    scale = min(1.0, GPT25_EDGE_MAX / max(w, h))
+    pixels = w * h * scale * scale
+    if pixels > GPT25_PIXELS_MAX:
+        scale *= math.sqrt(GPT25_PIXELS_MAX / pixels)
+    elif pixels < GPT25_PIXELS_MIN:
+        scale *= math.sqrt(GPT25_PIXELS_MIN / pixels)
+    w, h = _snap16(w * scale), _snap16(h * scale)
+
+    # Snapping can nudge a side just past a limit; walk back inside in 16 px
+    # steps (each loop only ever moves towards validity, so it terminates).
+    for _ in range(64):
+        long_side, short_side = max(w, h), min(w, h)
+        if long_side > GPT25_EDGE_MAX:
+            w, h = (w - 16, h) if w >= h else (w, h - 16)
+        elif w * h > GPT25_PIXELS_MAX:
+            w, h = (w - 16, h) if w >= h else (w, h - 16)
+        elif w * h < GPT25_PIXELS_MIN:
+            w, h = (w, h + 16) if w >= h else (w + 16, h)
+        elif long_side > short_side * GPT25_RATIO_MAX:
+            w, h = (w, h + 16) if w >= h else (w + 16, h)
+        else:
+            break
+
+    if (w, h) != tuple(int(v) for v in requested) and not notes:
+        notes.append(f"adjusted to {w}×{h} (multiples of 16, long edge ≤ "
+                     f"{GPT25_EDGE_MAX}, {GPT25_PIXELS_MIN:,}–{GPT25_PIXELS_MAX:,} px)")
+    elif (w, h) != tuple(int(v) for v in requested):
+        notes.append(f"custom size is now {w}×{h}")
+    return w, h, notes
+
+
+def apply_constraints(model: dict, clean: dict) -> list[str]:
+    """
+    Enforce the cross-field rules a provider documents for *model*, in place.
+
+    Per-field validation cannot express "custom sizes require 2K"; this does.
+    Returns operator-facing notes for every value it had to change.
+    """
+    notes: list[str] = []
+    rules = model.get("size_rules")
+    if rules == GPT25_SIZE_RULES:
+        if clean.get("size") == "custom":
+            if clean.get("resolution") == "1K":
+                clean["resolution"] = "2K"
+                notes.append("Resolution raised to 2K — custom sizes require 2K or 4K")
+            w, h, changed = gpt25_custom_size(clean.get("custom_width"),
+                                              clean.get("custom_height"))
+            if changed:
+                notes.append("Custom size: " + "; ".join(changed))
+            clean["custom_width"], clean["custom_height"] = w, h
+            if max(w, h) >= GPT25_EDGE_MAX and clean.get("resolution") != "4K":
+                clean["resolution"] = "4K"
+                notes.append("Resolution raised to 4K — a 3840-pixel edge requires 4K")
+        if (clean.get("background") == "transparent"
+                and clean.get("output_format") == "jpeg"):
+            clean["output_format"] = "png"
+            notes.append("Output format set to PNG — a transparent background "
+                         "needs PNG or WEBP")
+    return notes
+
+
+def _gpt_image_25_params(with_variant: bool = False):
+    """
+    GPT Image 2.5's documented input set on the APIDot-style contract.
+
+    APIDot exposes Flare and Sunburst as one model page with two ids (hence the
+    `variant` picker); PoYo documents each id on its own page with the same
+    fields, so its models carry no variant.
+    """
+    params = []
+    if with_variant:
+        params.append(_select("variant", "Model variant", [
+            ("gpt-image-2.5-flare", "Flare"),
+            ("gpt-image-2.5-sunburst", "Sunburst"),
+        ], "gpt-image-2.5-flare",
+            "Both variants take identical parameters; Flare is the "
+            "documented default.", wire="model"))
+    params += [
+        _select("quality", "Quality", [
+            ("low", "Low"), ("medium", "Medium"), ("high", "High"),
+            ("xhigh", "XHigh"), ("max", "Max"),
+        ], "high",
+            "Rendering effort. Higher costs more credits and takes longer; "
+            "“high” is the documented default."),
+        _select("resolution", "Resolution", _RESOLUTIONS, "1K",
+                "Output pixel density. Default 1K. At 2K and 4K the canvas is "
+                "always an explicit ratio (the provider accepts “auto” only at "
+                "1K)."),
+        _select("size", "Canvas / Aspect ratio", _APIDOT_SIZES, "auto",
+                "“Auto” keeps the ratio the brief analysis picked for each "
+                "contest. Choose Custom to send an exact WIDTHxHEIGHT (2K or "
+                "4K only)."),
+        _number("custom_width", "Custom width (px)", 1024,
+                "Sent as part of WIDTHxHEIGHT. Multiples of 16, long edge ≤ "
+                "3840, aspect ≤ 3:1, 655,360–8,294,400 pixels in total — "
+                "adjusted on save to the nearest valid size.",
+                minimum=256, maximum=GPT25_EDGE_MAX, step=16,
+                show_if={"key": "size", "equals": "custom"}),
+        _number("custom_height", "Custom height (px)", 1024,
+                "Sent as part of WIDTHxHEIGHT (same rules as the width).",
+                minimum=256, maximum=GPT25_EDGE_MAX, step=16,
+                show_if={"key": "size", "equals": "custom"}),
+        _select("background", "Background", _BACKGROUNDS, "auto",
+                "Transparent requires PNG or WEBP output — JPEG has no "
+                "alpha channel."),
+        _select("output_format", "Output format", [
+            ("png", "PNG"), ("jpeg", "JPEG"), ("webp", "WEBP"),
+        ], "png", "File type returned by the API. Default PNG. Entries are "
+                  "uploaded as PNG or JPEG, so a WEBP result is converted to "
+                  "PNG on download."),
+    ]
+    return params
+
+
+_KOVAPI_SIZES = _ratios(["auto", "1:1", "3:4", "2:3", "9:16", "4:3", "3:2", "16:9"])
+
+
+def _kovapi_image_params():
+    """
+    KovAPI's GPT Image 2.5 fields. `background`, `output_format` and `style`
+    are accepted but "not guaranteed to take effect; output is always PNG", and
+    `n` is documented as "avoid" — none of them is offered.
+    """
+    return [
+        _select("resolution", "Resolution", _RESOLUTIONS, "1K",
+                "Priced per tier only: 1K 1 credit ($0.005), 2K 6 ($0.03), 4K "
+                "10 ($0.05). 1K renders the nearest square / 3:2 / 2:3 frame and "
+                "centre-crops it to the canvas, so wide or tall canvases lose "
+                "their edges; 2K and 4K render the exact ratio natively."),
+        _select("size", "Canvas / Aspect ratio", _KOVAPI_SIZES, "auto",
+                "“Auto” keeps the ratio the brief analysis picked for each "
+                "contest, moved to the nearest documented ratio. With no ratio "
+                "the documented default is a 1:1 square."),
+        _select("quality", "Quality (1K only)", [
+            ("low", "Low"), ("medium", "Medium"), ("high", "High"),
+        ], "medium",
+            "Applies at 1K only — 2K and 4K always render at medium. Does not "
+            "change the price; the documented default is medium."),
+    ]
 
 
 def _kie_image_params(ratios):
@@ -406,37 +632,8 @@ MODELS: list[dict] = [
         "capabilities": {"reference_images": True, "mask": True,
                          "custom_canvas": True, "output_format": True,
                          "quality": True},
-        "params": [
-            _select("variant", "Model variant", [
-                ("gpt-image-2.5-flare", "Flare"),
-                ("gpt-image-2.5-sunburst", "Sunburst"),
-            ], "gpt-image-2.5-flare",
-                "Both variants take identical parameters; Flare is the "
-                "documented default.", wire="model"),
-            _select("quality", "Quality", [
-                ("low", "Low"), ("medium", "Medium"), ("high", "High"),
-                ("xhigh", "XHigh"), ("max", "Max"),
-            ], "high",
-                "Rendering effort. Higher costs more credits and takes longer; "
-                "“high” is the documented default."),
-            _select("resolution", "Resolution", _RESOLUTIONS, "1K",
-                    "Output pixel density. Default 1K."),
-            _select("size", "Canvas / Aspect ratio", _APIDOT_SIZES, "auto",
-                    "“Auto” keeps the ratio the brief analysis picked for each "
-                    "contest. Choose Custom to send an exact WIDTHxHEIGHT."),
-            _number("custom_width", "Custom width (px)", 1024,
-                    "Sent as part of WIDTHxHEIGHT.", minimum=64, maximum=8192,
-                    show_if={"key": "size", "equals": "custom"}),
-            _number("custom_height", "Custom height (px)", 1024,
-                    "Sent as part of WIDTHxHEIGHT.", minimum=64, maximum=8192,
-                    show_if={"key": "size", "equals": "custom"}),
-            _select("background", "Background", _BACKGROUNDS, "auto",
-                    "Transparent requires PNG or WEBP output — JPEG has no "
-                    "alpha channel."),
-            _select("output_format", "Output format", [
-                ("png", "PNG"), ("jpeg", "JPEG"), ("webp", "WEBP"),
-            ], "png", "File type returned by the API. Default PNG."),
-        ],
+        "size_rules": GPT25_SIZE_RULES,
+        "params": _gpt_image_25_params(with_variant=True),
     },
 
     {
@@ -638,6 +835,81 @@ MODELS: list[dict] = [
         "sibling_t2i": "kie:gpt-image-2-5-sunburst-text-to-image",
         "params": _kie_image_params(_KIE_SUNBURST_I2I_RATIOS),
     },
+
+    # ───────────────────────── PoYo · image ───────────────────────────────────
+    # One model id covers both modes: "A non-empty image_urls array selects
+    # editing automatically" — so, like APIDot's 2.5, there is no editing
+    # sibling. Flare and Sunburst document identical fields.
+    {
+        "key": "poyo:gpt-image-2.5-flare",
+        "provider": "poyo", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Flare",
+        "tagline": "Quality up to Max, 1K–4K, transparent backgrounds. Edits "
+                   "with the contest's reference files when it has them.",
+        "wire_model": "gpt-image-2.5-flare",
+        "transport": "poyo_image",
+        "endpoint": "/api/generate/submit",
+        "auth": "bearer",
+        "docs_url": "https://docs.poyo.ai/api-manual/image-series/gpt-image-2-5-flare",
+        "capabilities": {"reference_images": True, "mask": True,
+                         "custom_canvas": True, "output_format": True,
+                         "quality": True},
+        "size_rules": GPT25_SIZE_RULES,
+        "params": _gpt_image_25_params(),
+    },
+    {
+        "key": "poyo:gpt-image-2.5-sunburst",
+        "provider": "poyo", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Sunburst",
+        "tagline": "Sunburst rendering with the same controls as Flare. Edits "
+                   "with the contest's reference files when it has them.",
+        "wire_model": "gpt-image-2.5-sunburst",
+        "transport": "poyo_image",
+        "endpoint": "/api/generate/submit",
+        "auth": "bearer",
+        "docs_url": "https://docs.poyo.ai/api-manual/image-series/gpt-image-2-5-sunburst",
+        "capabilities": {"reference_images": True, "mask": True,
+                         "custom_canvas": True, "output_format": True,
+                         "quality": True},
+        "size_rules": GPT25_SIZE_RULES,
+        "params": _gpt_image_25_params(),
+    },
+
+    # ───────────────────────── KovAPI · image ─────────────────────────────────
+    # POST /v1/images/generations turns into image-to-image when `image` /
+    # `images` is present, so one model id covers both modes. References travel
+    # inside the JSON body (URL, data URI or base64 — there is no upload
+    # endpoint), at most 8 per request.
+    {
+        "key": "kovapi:gpt-image-2.5-flare",
+        "provider": "kovapi", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Flare",
+        "tagline": "Per-tier pricing from $0.005 an image. Uses up to 8 of the "
+                   "contest's reference files; always returns PNG.",
+        "wire_model": "gpt-image-2.5-flare",
+        "transport": "kovapi_image",
+        "endpoint": "/v1/images/generations",
+        "auth": "bearer",
+        "docs_url": "https://docs.kovapi.com/gpt-image-2.5-flare",
+        "capabilities": {"reference_images": True},
+        "size_rules": KOVAPI_SIZE_RULES,
+        "params": _kovapi_image_params(),
+    },
+    {
+        "key": "kovapi:gpt-image-2.5-sunburst",
+        "provider": "kovapi", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Sunburst",
+        "tagline": "Sunburst rendering, same fields and prices as Flare. Uses "
+                   "up to 8 of the contest's reference files.",
+        "wire_model": "gpt-image-2.5-sunburst",
+        "transport": "kovapi_image",
+        "endpoint": "/v1/images/generations",
+        "auth": "bearer",
+        "docs_url": "https://docs.kovapi.com/gpt-image-2.5-sunburst",
+        "capabilities": {"reference_images": True},
+        "size_rules": KOVAPI_SIZE_RULES,
+        "params": _kovapi_image_params(),
+    },
 ]
 
 MODELS_BY_KEY: dict[str, dict] = {m["key"]: m for m in MODELS}
@@ -702,6 +974,15 @@ def selectable_equivalent(model_key: str) -> str:
 
 def providers_with(category: str) -> list[str]:
     return [p for p in PROVIDER_IDS if models_for(p, category)]
+
+
+def serves(provider: str, category: str) -> bool:
+    """Does *provider* register any model for *category*?"""
+    return bool(models_for(provider, category))
+
+
+def provider_label(provider: str) -> str:
+    return (PROVIDERS.get(provider) or {}).get("label", provider)
 
 
 def default_params(model_key: str) -> dict:
@@ -794,6 +1075,9 @@ def validate_params(model_key: str, raw: dict) -> tuple[dict, list[str]]:
                 text = text[:limit]
             clean[key] = text
 
+    # Cross-field rules ("custom sizes require 2K") that no single field can
+    # express; reported like any other correction.
+    errors.extend(apply_constraints(model, clean))
     return clean, errors
 
 
@@ -816,7 +1100,10 @@ def registry_json() -> dict:
             for cid in CATEGORIES
         ],
         "providers": [
-            {k: v for k, v in provider.items() if k != "key_setting"}
+            {**{k: v for k, v in provider.items() if k != "key_setting"},
+             # Image-only providers have no chat model to ping, so the page
+             # words their "Test model" as one real (cheap) image job.
+             "categories": [c for c in CATEGORIES if serves(provider["id"], c)]}
             for provider in PROVIDERS.values()
         ],
         "models": [

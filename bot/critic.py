@@ -12,6 +12,15 @@ IMPORTANT: the critic only evaluates and selects — it never triggers
 regeneration. It is also crash-proof: any per-design failure yields a neutral
 fallback score, and a total failure returns None so the pipeline falls back to
 the existing brief-match (variation order) selection.
+
+The requirements it judges against come from the SAME CreativePromptBuilder
+plan the generator used: a logo entry is judged as one logo (not against the
+analysis's "six directions on a board" that the builder deliberately dropped),
+the exact text is every word the image was asked to carry — the wordmark
+included, even when the brief listed no required_text — and on a logo, cover
+or shirt any extra lettering counts against it. Judging against requirements
+the prompt never asked for used to mis-rank designs and feed auto-refine notes
+that contradicted the template.
 """
 
 import base64
@@ -26,12 +35,20 @@ from PIL import Image
 from app import db
 from app.models import Contest, Design, add_log
 from bot.llm import LLMClient
+from bot.prompt_builder import TEXT_EXCLUSIVE, TEXT_NONE, CreativePromptBuilder
 
 # Judging runs on whatever chat model the AI Agents page selected; LLMClient
 # resolves it, so there is no model constant here.
 # Few images per contest and text accuracy matters, so judge at high detail.
 CRITIC_DETAIL = "high"
 IMAGE_MAX_PX = 1024
+# A flyer that credits 32 people cannot be proof-read at 1024 px.
+DENSE_TEXT_MAX_PX = 1536
+DENSE_TEXT_BLOCKS = 8
+# The system prompt's own rule ("misspelled, missing, or extra required text
+# must not score above 60"), enforced rather than hoped for.
+TEXT_ACCURACY_FLOOR = 70
+TEXT_ERROR_SCORE_CAP = 60
 
 _CRITIC_SYSTEM = """\
 You are a meticulous design-contest judge. You are shown ONE generated design
@@ -90,6 +107,7 @@ def _as_list(value) -> list[str]:
 
 
 def _normalize_eval(data: dict, text_required: bool) -> dict:
+    """Clamp and complete one evaluation; enforce the text-accuracy cap."""
     out: dict = {}
     out["brief_match_score"] = _clamp100(data.get("brief_match_score"))
     out["visual_quality_score"] = _clamp100(data.get("visual_quality_score"))
@@ -106,6 +124,12 @@ def _normalize_eval(data: dict, text_required: bool) -> dict:
     else:
         out["score"] = round(0.6 * out["brief_match_score"] + 0.4 * out["visual_quality_score"])
 
+    if (text_required and out["text_accuracy_score"] is not None
+            and out["text_accuracy_score"] < TEXT_ACCURACY_FLOOR
+            and out["score"] > TEXT_ERROR_SCORE_CAP):
+        out["score"] = TEXT_ERROR_SCORE_CAP
+        out["score_capped"] = "text accuracy"
+
     out["missing_requirements"] = _as_list(data.get("missing_requirements"))
     out["visual_problems"] = _as_list(data.get("visual_problems"))
     out["risk_flags"] = _as_list(data.get("risk_flags"))
@@ -114,57 +138,87 @@ def _normalize_eval(data: dict, text_required: bool) -> dict:
 
 class DesignCritic:
 
-    def __init__(self, prompt_data: Optional[dict] = None):
-        # LLMClient reads the kie.ai API key + selected model from Settings and
-        # raises a config error (short-circuited by Celery) if the key is missing.
+    def __init__(self, prompt_data: Optional[dict] = None, title: str = ""):
+        # LLMClient reads the configured chat provider's key + model and raises
+        # a config error (short-circuited by Celery) if the key is missing.
         self.client = LLMClient()
         self.brief = prompt_data or {}
+        self.title = title
+        self._plan: Optional[CreativePromptBuilder] = None
+
+    def _builder(self) -> CreativePromptBuilder:
+        if self._plan is None:
+            self._plan = CreativePromptBuilder(self.brief, title=self.title)
+        return self._plan
 
     # ── Image encoding ─────────────────────────────────────────────────────────
 
     @staticmethod
-    def _encode(path: str) -> tuple[str, str]:
+    def _encode(path: str, max_px: int = IMAGE_MAX_PX) -> tuple[str, str]:
         img = Image.open(path).convert("RGB")
-        img.thumbnail((IMAGE_MAX_PX, IMAGE_MAX_PX), Image.LANCZOS)
+        img.thumbnail((max_px, max_px), Image.LANCZOS)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=88)
         return "image/jpeg", base64.b64encode(buf.getvalue()).decode("utf-8")
 
+    def _review_px(self) -> int:
+        dense = (self.brief.get("text_density") == "dense"
+                 or len(self._builder().text_blocks()) > DENSE_TEXT_BLOCKS)
+        return DENSE_TEXT_MAX_PX if dense else IMAGE_MAX_PX
+
     # ── Requirements block ─────────────────────────────────────────────────────
+
+    def expected_text(self) -> list[str]:
+        """Every string the image was asked to carry, in order."""
+        return [b["text"] for b in self._builder().text_blocks()]
 
     def _requirements_block(self) -> str:
         b = self.brief
+        plan = self._builder()
         lines = ["CLIENT BRIEF REQUIREMENTS:",
-                 f"- contest type: {b.get('contest_type', 'design')}"]
-        if b.get("deliverable"):
-            lines.append(f"- the image must show: {b['deliverable']}")
+                 f"- contest type: {b.get('contest_type', 'design')}",
+                 f"- the image must show: {plan.deliverable_text()}"]
         if b.get("brand_name"):
             lines.append(f"- brand: {b['brand_name']}")
-        if b.get("layout_plan"):
-            lines.append(f"- layout, in order: {'; '.join(map(str, b['layout_plan']))}")
+        zones = plan.layout_zones()
+        if zones:
+            lines.append(f"- layout, in order: {'; '.join(map(str, zones))}")
         if b.get("placeholders"):
             lines.append("- must be shown as labelled placeholders (not real "
                          f"content): {'; '.join(map(str, b['placeholders']))}")
-        if b.get("brief_facts"):
+        policy = plan.text_policy()
+        if b.get("brief_facts") and policy not in (TEXT_EXCLUSIVE, TEXT_NONE):
             lines.append("- facts any wording must agree with (penalise "
                          f"contradictions): {'; '.join(map(str, b['brief_facts']))}")
-        rt = b.get("required_text") or []
-        lines.append(f"- exact text required: {'; '.join(map(str, rt)) if rt else 'none'}")
-        if b.get("must_include"):
-            lines.append(f"- must include: {', '.join(map(str, b['must_include']))}")
-        if b.get("must_avoid"):
-            lines.append(f"- must avoid: {', '.join(map(str, b['must_avoid']))}")
+        texts = self.expected_text()
+        if texts:
+            lines.append("- exact text required (read it in the image and compare "
+                         "letter for letter): "
+                         + "; ".join(f'"{t}"' for t in texts))
+            if policy == TEXT_EXCLUSIVE:
+                lines.append("- that text is the ONLY lettering allowed: penalise "
+                             "any other words, letters, numbers or fake text")
+        elif policy in (TEXT_EXCLUSIVE, TEXT_NONE):
+            lines.append("- exact text required: none — the image should carry no "
+                         "lettering at all")
+        else:
+            lines.append("- exact text required: none")
+        include = plan.visible_must_include()
+        if include:
+            lines.append(f"- must include: {', '.join(map(str, include))}")
+        avoid = plan.avoid_list()
+        if avoid:
+            lines.append(f"- must avoid: {'; '.join(map(str, avoid))}")
         pc = b.get("preferred_colors") or b.get("colors") or []
         if pc:
             lines.append(f"- preferred colors: {', '.join(map(str, pc))}")
-        if b.get("forbidden_colors"):
-            lines.append(f"- forbidden colors: {', '.join(map(str, b['forbidden_colors']))}")
         if b.get("design_style"):
             lines.append(f"- style: {b['design_style']}")
         if b.get("mood"):
             lines.append(f"- mood: {b['mood']}")
-        if b.get("quality_checklist"):
-            lines.append(f"- quality checklist: {', '.join(map(str, b['quality_checklist']))}")
+        checklist = list(plan.template.get("checklist", [])) + plan.visible_checklist()
+        if checklist:
+            lines.append(f"- quality checklist: {', '.join(map(str, checklist))}")
         return "\n".join(lines)
 
     # ── Single-design evaluation ───────────────────────────────────────────────
@@ -186,7 +240,7 @@ class DesignCritic:
                     "visual_quality_score": 30, "visual_problems": ["image file missing"]}
 
         try:
-            mime, b64 = self._encode(path)
+            mime, b64 = self._encode(path, self._review_px())
         except Exception as exc:
             add_log("critic", "WARNING",
                     f"Could not encode design {design.id}: {exc} — neutral score.",
@@ -205,6 +259,7 @@ class DesignCritic:
             raw = self.client.chat(
                 _CRITIC_SYSTEM, user_content,
                 max_tokens=700, temperature=0.2, json_object=True, tools=False,
+                operation="design_critic", contest_id=design.contest_id,
             )
             data = _safe_json(raw)
         except Exception as exc:
@@ -238,6 +293,8 @@ class DesignCritic:
                 self.brief = json.loads(contest.prompt_data or "{}")
             except json.JSONDecodeError:
                 self.brief = {}
+        self.title = self.title or contest.title or ""
+        self._plan = None
 
         designs = (
             Design.query
@@ -251,8 +308,7 @@ class DesignCritic:
                     contest_id=contest_id)
             return None
 
-        required_text = self.brief.get("required_text") or []
-        text_required = bool(required_text)
+        text_required = bool(self.expected_text())
         requirements = self._requirements_block()
 
         add_log("critic", "INFO",

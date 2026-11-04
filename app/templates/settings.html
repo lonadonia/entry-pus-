@@ -551,15 +551,16 @@
       <div class="field-row">
         <div>
           <div class="field-label">Designs Per Contest</div>
-          <div class="field-hint">Variations to generate (1–5). More variations = more kie.ai credits used.</div>
+          <div class="field-hint">Variations to generate (1–5). Each variation is one image
+            billed by the image provider chosen on the AI Agents page.</div>
         </div>
         <div class="field-control">
           <input type="number" name="designs_per_contest" id="field-designs_per_contest"
                  class="s-input w-24" min="1" max="5" step="1"
                  oninput="onDesignsCountInput()">
           <div id="creditCostHint" class="field-hint mt-1">
-            💳 ~<span id="creditsPerContest">30</span> kie.ai credits per contest
-            (10 × <span id="variationsCount">3</span> variations)
+            💳 <span id="creditsPerContest">3</span> paid image(s) per contest
+            (<span id="variationsCount">3</span> variations, rendered in parallel)
           </div>
         </div>
       </div>
@@ -596,10 +597,26 @@
 
       <div class="field-row">
         <div>
+          <div class="field-label">Skip Contests That Forbid AI</div>
+          <div class="field-hint">A brief that rules out AI-generated work ("no AI",
+            "AI entries will be disqualified") is skipped before any design is made —
+            every entry this bot submits is declared AI-generated.</div>
+        </div>
+        <div class="field-control">
+          <select name="contest_skip_no_ai" id="field-contest_skip_no_ai"
+                  class="s-input w-40">
+            <option value="true">Skip (recommended)</option>
+            <option value="false">Enter anyway</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
           <div class="field-label">Auto-Refine Threshold</div>
           <div class="field-hint">If every design scores below this (0–100), one extra
             corrective design is generated from the critic's feedback. 0 = off.
-            Costs ~10 extra credits when triggered.</div>
+            Costs one extra image when triggered.</div>
         </div>
         <div class="field-control">
           <input type="number" name="critic_regen_threshold" id="field-critic_regen_threshold"
@@ -1438,6 +1455,7 @@ const PLAIN_FIELDS = [
   'min_prize_filter', 'max_entries_filter', 'max_contest_age_hours',
   'designs_per_contest',
   'prompt_enhancer_enabled', 'design_critic_enabled', 'critic_regen_threshold',
+  'contest_skip_no_ai',
   // Projects / Proposals workflow
   'project_search_url', 'project_pages_to_fetch', 'project_detail_batch_cap',
   'project_max_age_hours',
@@ -1479,7 +1497,7 @@ function onDesignsCountInput() {
   let n = parseInt(input.value, 10);
   if (!Number.isFinite(n) || n < 1) n = 1;
   if (n > 5) n = 5;
-  credits.textContent = (n * 10).toString();
+  credits.textContent = n.toString();
   count.textContent   = n.toString();
 }
 

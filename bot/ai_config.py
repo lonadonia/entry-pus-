@@ -7,14 +7,15 @@ runtime clients consume. Nothing else in `bot/` reads the raw settings keys.
 
 Settings owned here (all per-Space, all written only by /api/ai/*):
 
-    ai_chat_provider    "apidot" | "kie"
+    ai_chat_provider    "apidot" | "kie"  (the providers that serve chat)
     ai_chat_model       registry key, e.g. "kie:gpt-5-5"
     ai_chat_params      JSON {model_key: {param: value}} — per model, so
                         switching back and forth keeps each model's tuning
-    ai_image_provider   "apidot" | "kie"
+    ai_image_provider   "apidot" | "kie" | "poyo" | "kovapi"
     ai_image_model      registry key
     ai_image_params     JSON {model_key: {param: value}}
-    apidot_api_key      APIDot credential (kie.ai keeps the existing kie_api_key)
+    apidot_api_key      APIDot credential (kie.ai keeps the existing kie_api_key;
+                        PoYo and KovAPI use poyo_api_key / kovapi_api_key)
     ai_provider_status  JSON {provider: {ok, message, checked_at}} — last test
 
 The invariant the product is built on: **one provider per category**. The model
@@ -248,6 +249,7 @@ def save_provider_key(provider: str, api_key: str) -> None:
     from bot import ai_health
     ai_health.clear_block(provider)
     ai_health.invalidate_balance(provider)
+    ai_health.forget_verified(provider)
 
 
 def get_status() -> dict:

@@ -619,6 +619,14 @@ _DEFAULTS: list[tuple[str, str, str, bool]] = [
      "",
      "APIDot API key — powers whichever APIDot chat/image models are selected",
      True),
+    ("poyo_api_key",
+     "",
+     "PoYo API key — powers the PoYo GPT Image 2.5 models when selected",
+     True),
+    ("kovapi_api_key",
+     "",
+     "KovAPI API key — powers the KovAPI GPT Image 2.5 models when selected",
+     True),
     ("ai_chat_provider",
      "",
      "Provider used for chat / text / analysis (apidot | kie)",
@@ -633,7 +641,7 @@ _DEFAULTS: list[tuple[str, str, str, bool]] = [
      False),
     ("ai_image_provider",
      "",
-     "Provider used for image generation (apidot | kie)",
+     "Provider used for image generation (apidot | kie | poyo | kovapi)",
      False),
     ("ai_image_model",
      "",
@@ -680,6 +688,12 @@ _DEFAULTS: list[tuple[str, str, str, bool]] = [
      "When true, an AI Art Director rewrites each variation's generation prompt "
      "into a vivid, craft-focused brief (composition, typography, color, lighting) "
      "before image generation. Falls back to the deterministic prompt on failure.",
+     False),
+    ("contest_skip_no_ai",
+     "true",
+     "When true, a contest whose brief or attachments forbid AI-generated work "
+     "is skipped after a free text check, before any design is generated: the "
+     "client has ruled out every entry this bot can make.",
      False),
     ("critic_regen_threshold",
      "55",

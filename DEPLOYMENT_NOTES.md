@@ -98,3 +98,38 @@ sudo docker compose logs -f celery_beat              # a tick every minute
   database). Turning the schedule on never back-fills earlier days.
 - The removed 6-hourly *contest* fetch had never run (beat was not deployed); nothing contest-side
   changes.
+
+
+---
+
+# Pending change — 2026-11-04 (contests: PoYo + KovAPI, design fidelity, pipeline fixes)
+
+**Not deployed yet.** Same roll-out as the change above (one `git pull`, then
+`sudo docker compose stop -t 290 celery_worker && sudo docker compose up -d --build web celery_worker celery_beat`).
+No schema change: the three new settings rows (`poyo_api_key`, `kovapi_api_key` as
+secrets, `contest_skip_no_ai`) are seeded at boot by `seed_default_settings()`.
+
+**New image providers** (AI Agents → Image Generation AI): **PoYo** and **KovAPI**, each with
+GPT Image 2.5 **Flare** and **Sunburst**. Paste the key under Provider Credentials, press
+*Test connection* (free: balance + status endpoint), then *Test model* (one real 1K test
+image; KovAPI charges 1 credit = $0.005). Nothing changes for a Space until someone selects
+one of them.
+
+- PoYo delivers webhooks to **HTTPS only**; with the current `server_host`
+  (`http://13.53.151.43`) its results are read by polling (12 s) — set an HTTPS
+  `server_host` to get webhooks. KovAPI accepts the public http address.
+- KovAPI renders 1K by centre-cropping a square / 3:2 / 2:3 frame; 2K ($0.03) and
+  4K ($0.05) render the exact ratio. The prompt keeps content central at 1K.
+
+**Behaviour changes worth knowing**
+- **Contests whose brief forbids AI-generated work are now `skipped`** (before any paid
+  analysis when the description says so; after analysis when an attachment does). Every
+  entry is declared AI-generated, so these could not win. Settings → *Skip Contests That
+  Forbid AI* → "Enter anyway" restores the old behaviour.
+- Variations are submitted together and collected together (≈ one render time per
+  contest instead of three).
+- With GPT Image 2.5 (APIDot or PoYo), saving an impossible canvas (custom size at 1K,
+  edges not divisible by 16, > 3840 px, transparent JPEG) is corrected on save and the
+  page says what changed.
+- Required text and brand names the brief never contains are no longer lettered onto
+  logos (they are logged as "Grounding: …" warnings on the contest).

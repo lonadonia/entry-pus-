@@ -284,7 +284,8 @@ def test_copy_blocks_always_contain_the_required_text():
                            _Contest())
     texts = [b["text"] for b in out["copy_blocks"]]
     assert texts == ["NovaCore", "Est. 2020"]
-    assert out["analysis_version"] == 3
+    from bot.analyzer import ANALYSIS_VERSION
+    assert out["analysis_version"] == ANALYSIS_VERSION >= 3
 
 
 def test_reference_roles_are_normalised():

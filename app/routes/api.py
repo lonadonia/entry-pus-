@@ -809,6 +809,34 @@ def kie_callback():
     return jsonify({"received": True, "taskId": task_id}), 200
 
 
+def _stash_callback(prefix: str, task_id: str, data: dict, label: str):
+    """
+    Store a provider webhook body in Redis at `{prefix}{task_id}` for the
+    worker polling it (ImageTransport.poll_once). Nothing slow happens here:
+    every provider retries a webhook that does not get a fast 2xx (KovAPI
+    allows 10 s, PoYo and APIDot 30 s).
+    """
+    try:
+        r = redis.from_url(
+            os.environ.get("REDIS_URL", "redis://redis:6379/0")
+        )
+        r.set(f"{prefix}{task_id}", json.dumps(data), ex=7200)
+    except Exception as exc:
+        add_log("generator", "ERROR",
+                f"Failed to store {label} callback in Redis for {task_id}: {exc}")
+        return jsonify({"error": "redis store failed"}), 500
+
+    add_log("generator", "INFO", f"{label} callback stored for task_id={task_id}")
+    return jsonify({"received": True, "task_id": task_id}), 200
+
+
+def _platform_task_id(data: dict):
+    """task_id of an APIDot-style webhook body (bare task, or {code, data})."""
+    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
+    return (data.get("task_id") or data.get("taskId")
+            or inner.get("task_id") or inner.get("taskId"))
+
+
 @bp.route("/apidot-callback", methods=["POST"])
 def apidot_callback():
     """
@@ -823,29 +851,52 @@ def apidot_callback():
     add_log("generator", "INFO",
             f"APIDot callback received: {json.dumps(data)}")
 
-    inner = data.get("data") if isinstance(data.get("data"), dict) else {}
-    task_id = (
-        data.get("task_id") or data.get("taskId")
-        or inner.get("task_id") or inner.get("taskId")
-    )
-
+    task_id = _platform_task_id(data)
     if not task_id:
         add_log("generator", "ERROR",
                 f"APIDot callback missing task_id. Body: {json.dumps(data)[:500]}")
         return jsonify({"error": "no task_id"}), 400
+    return _stash_callback("apidot_result:", task_id, data, "APIDot")
 
-    try:
-        r = redis.from_url(
-            os.environ.get("REDIS_URL", "redis://redis:6379/0")
-        )
-        r.set(f"apidot_result:{task_id}", json.dumps(data), ex=7200)
-    except Exception as exc:
+
+@bp.route("/poyo-callback", methods=["POST"])
+def poyo_callback():
+    """
+    Webhook target for PoYo task completion — the APIDot body shape
+    ({task_id, status, files[], created_time, error_message}), sent on
+    `finished` / `failed`, retried up to 5 times, answered within 30 s.
+    """
+    data = request.get_json(silent=True) or {}
+    add_log("generator", "INFO", f"PoYo callback received: {json.dumps(data)[:2000]}")
+    task_id = _platform_task_id(data)
+    if not task_id:
         add_log("generator", "ERROR",
-                f"Failed to store APIDot callback in Redis for {task_id}: {exc}")
-        return jsonify({"error": "redis store failed"}), 500
+                f"PoYo callback missing task_id. Body: {json.dumps(data)[:500]}")
+        return jsonify({"error": "no task_id"}), 400
+    return _stash_callback("poyo_result:", task_id, data, "PoYo")
 
-    add_log("generator", "INFO", f"Callback stored for task_id={task_id}")
-    return jsonify({"received": True, "task_id": task_id}), 200
+
+@bp.route("/kovapi-callback", methods=["POST"])
+def kovapi_callback():
+    """
+    Webhook target for KovAPI job completion. The body is "the same result as
+    the query endpoint" — a Standard-Webhooks envelope
+    `{id:"evt_…", object:"event", type:"image.completed"|"image.failed",
+    data:<job>}`, or the bare job. The JOB id (`img_…`) keys the result: the
+    envelope's own `id` names the event, not the job.
+    """
+    data = request.get_json(silent=True) or {}
+    add_log("generator", "INFO", f"KovAPI callback received: {json.dumps(data)[:2000]}")
+    job = data
+    if isinstance(data.get("data"), dict) and (
+            data.get("object") == "event" or str(data.get("type") or "").startswith("image.")):
+        job = data["data"]
+    task_id = job.get("id") if isinstance(job, dict) else None
+    if not task_id or str(task_id).startswith("evt_"):
+        add_log("generator", "ERROR",
+                f"KovAPI callback missing the job id. Body: {json.dumps(data)[:500]}")
+        return jsonify({"error": "no job id"}), 400
+    return _stash_callback("kovapi_result:", str(task_id), data, "KovAPI")
 
 
 @bp.route("/debug/test-kie", methods=["GET"])

@@ -35,6 +35,7 @@ _FIELDS: list[tuple[str, str, str, bool]] = [
     ("design_critic_enabled",       "Design Critic (true/false)",        "text",     False),
     ("prompt_enhancer_enabled",     "AI Art Director (true/false)",      "text",     False),
     ("critic_regen_threshold",      "Auto-Refine Threshold (0=off)",     "number",   False),
+    ("contest_skip_no_ai",          "Skip Contests That Forbid AI",      "text",     False),
     ("designs_per_contest",         "Designs Per Contest",               "number",   False),
     ("submission_interval_minutes", "Interval Between Entries (min)",    "number",   False),
     ("submission_ai_declaration",   "AI Use Declaration",                "text",     False),
@@ -178,7 +179,8 @@ def settings_save():
             continue
         # Coerce to canonical forms for the keys that drive bot logic.
         if key in ("auto_submit_enabled", "design_critic_enabled",
-                   "prompt_enhancer_enabled", "project_auto_analyze",
+                   "prompt_enhancer_enabled", "contest_skip_no_ai",
+                   "project_auto_analyze",
                    "project_require_approval", "project_discovery_enabled",
                    "project_cleanup_enabled"):
             val = "true" if val.lower() in ("true", "1", "on", "yes") else "false"

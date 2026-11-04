@@ -264,7 +264,11 @@ def test_save_config_round_trips_validated_params(ctx):
         {"quality": "max", "size": "custom", "custom_width": 99999},
     )
     assert clean["quality"] == "max"
-    assert clean["custom_width"] == 8192        # clamped to the documented max
+    # Clamped to the documented long-edge limit (3840), the 3:1 ratio cap
+    # pulls the default height up to match, and a 3840 edge requires 4K.
+    assert clean["custom_width"] == 3840
+    assert clean["custom_height"] == 1280
+    assert clean["resolution"] == "4K"
 
     assert ai_config.selected_model_key(reg.CATEGORY_IMAGE) == "apidot:gpt-image-2.5"
     stored = ai_config.params_for(reg.CATEGORY_IMAGE, "apidot:gpt-image-2.5")
@@ -375,9 +379,16 @@ def test_every_hidden_model_is_reachable_from_a_visible_one():
 def test_models_for_can_filter_to_the_pickable_set():
     for provider in reg.PROVIDER_IDS:
         offered = reg.models_for(provider, reg.CATEGORY_IMAGE, selectable_only=True)
+        everything = reg.models_for(provider, reg.CATEGORY_IMAGE)
         assert offered, provider
         assert all(m.get("selectable", True) for m in offered)
-        assert len(offered) < len(reg.models_for(provider, reg.CATEGORY_IMAGE))
+        # Only providers that split editing into its own model id hide one;
+        # PoYo and KovAPI switch mode inside a single id, so all are offered.
+        splits_modes = any(m.get("requires_reference_images") for m in everything)
+        if splits_modes:
+            assert len(offered) < len(everything), provider
+        else:
+            assert len(offered) == len(everything), provider
 
 
 def test_saving_a_hidden_model_is_refused(ctx):

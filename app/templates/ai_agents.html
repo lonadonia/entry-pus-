@@ -326,6 +326,9 @@ function renderCredentials() {
                  || health.state === 'key_limit';
     const modelTestBlocked = health.state === 'insufficient_credits'
                           || health.state === 'invalid_key';
+    // Image-only providers have no chat model: their "Test model" is one real
+    // 1K image job at the cheapest settings.
+    const imageOnly = !(p.categories || []).includes('chat');
 
     return `
       <div class="rounded-xl border ${blocked ? 'border-danger/30' : 'border-border'}
@@ -388,7 +391,9 @@ function renderCredentials() {
                       ? 'Blocked — resolve the provider state first'
                       : health.state === 'key_limit'
                         ? 'After raising the key limit, press this to verify and resume parked contests'
-                        : 'Sends one tiny real request — spends a few credits'}">
+                        : imageOnly
+                          ? 'Submits one real 1K test image — spends one low-tier image'
+                          : 'Sends one tiny real request — spends a few credits'}">
               <i data-lucide="flask-conical" class="w-3.5 h-3.5"></i> Test model
             </button>
             ${state.has_key ? `

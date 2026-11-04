@@ -17,6 +17,12 @@ Upload API:
     fileName   : original filename
   → 200 { "success": true, "code": 200, "data": { "downloadUrl": "https://tempfile.redpandaai.co/..." } }
   Files auto-delete after 3 days, which is fine for our use case.
+
+APIDot and PoYo share one upload contract (`POST /api/common/upload/stream`,
+multipart `file` + `upload_path` + `file_name` → `data.file_url`), so PoYo's
+uploader is APIDot's with its own host, key and rate limit. KovAPI has no
+upload endpoint at all: it accepts references inside the JSON body as a public
+URL, a data URI or raw base64, so `data_uri_for()` encodes them compactly.
 """
 
 import hashlib
@@ -82,6 +88,17 @@ UPLOAD_RETRY_DELAY  = 5       # seconds between retries
 APIDOT_UPLOAD_URL   = "https://api.apidot.ai/api/common/upload/stream"
 APIDOT_UPLOAD_PATH  = "contest-attachments"
 
+# PoYo documents the identical endpoint on its own host: images are kept 72 h
+# and the route allows 10 requests/minute.
+POYO_UPLOAD_URL     = "https://api.poyo.ai/api/common/upload/stream"
+
+# KovAPI references travel inside the JSON body (≤ 16 MB each, JPEG/PNG/WebP,
+# at most 8 per request). The generation model works at 1-2K internally, so a
+# 1536 px JPEG (PNG when the image has transparency) loses nothing it uses and
+# keeps a four-reference request body at a few megabytes instead of ~40.
+DATA_URI_MAX_PX     = 1536
+DATA_URI_MAX_BYTES  = 4 * 1024 * 1024
+
 
 class KieFileUploader:
     """Upload local files to kie.ai's File Upload API and return the CDN URL."""
@@ -90,8 +107,8 @@ class KieFileUploader:
         self.api_key = (get_setting("kie_api_key", "") or "").strip()
         if not self.api_key:
             raise RuntimeError(
-                "kie.ai API key is not configured. "
-                "Add it on the Settings page under 'kie.ai API Key'."
+                "Kie.ai API key is not configured. "
+                "Add it on the AI Agents page under Provider Credentials."
             )
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
@@ -159,11 +176,16 @@ class _PermanentUploadError(RuntimeError):
 class ApidotFileUploader:
     """Upload local files to APIDot's file store and return the public URL."""
 
+    LABEL = "APIDot"
+    URL = APIDOT_UPLOAD_URL
+    KEY_SETTING = "apidot_api_key"
+    RATE_NOTE = "5/min"
+
     def __init__(self, api_key: str = ""):
-        self.api_key = (api_key or get_setting("apidot_api_key", "") or "").strip()
+        self.api_key = (api_key or get_setting(self.KEY_SETTING, "") or "").strip()
         if not self.api_key:
             raise RuntimeError(
-                "APIDot API key is not configured. "
+                f"{self.LABEL} API key is not configured. "
                 "Add it on the AI Agents page under Provider Credentials."
             )
         self.session = requests.Session()
@@ -173,9 +195,9 @@ class ApidotFileUploader:
         """
         Upload *local_path* and return `data.file_url`.
 
-        Retries on network errors like the kie.ai uploader. APIDot rate-limits
-        this endpoint to 5 requests/minute (HTTP 429), so a 429 waits longer
-        than a plain network blip before retrying.
+        Retries on network errors like the kie.ai uploader. The endpoint is
+        rate-limited (APIDot 5/min, PoYo 10/min, HTTP 429), so a 429 waits
+        longer than a plain network blip before retrying.
         """
         src = Path(local_path)
         if not src.exists():
@@ -192,13 +214,14 @@ class ApidotFileUploader:
                         "file_name":   name,
                     }
                     resp = self.session.post(
-                        APIDOT_UPLOAD_URL, files=files, data=data,
+                        self.URL, files=files, data=data,
                         timeout=UPLOAD_TIMEOUT,
                     )
 
                 if resp.status_code == 429:
                     raise RuntimeError(
-                        "HTTP 429: APIDot upload rate limit (5/min) reached"
+                        f"HTTP 429: {self.LABEL} upload rate limit "
+                        f"({self.RATE_NOTE}) reached"
                     )
                 if resp.status_code >= 400:
                     # A rejected file type / size is permanent: re-sending the
@@ -209,34 +232,90 @@ class ApidotFileUploader:
                     raise RuntimeError(message)
 
                 payload = resp.json()
-                if payload.get("code") not in (200, 0) and not payload.get("success"):
-                    raise RuntimeError(f"APIDot upload API error: {payload}")
+                code = payload.get("code")
+                if code not in (200, 0, None) and not payload.get("success"):
+                    # Same platform as the generation API: a rejection can
+                    # arrive as HTTP 200 with the real status in body.code.
+                    message = f"{self.LABEL} upload API error: {payload}"
+                    if isinstance(code, int) and 400 <= code < 500 and code != 429:
+                        raise _PermanentUploadError(message)
+                    raise RuntimeError(message)
 
                 file_url = (payload.get("data") or {}).get("file_url")
                 if not file_url:
-                    raise RuntimeError(f"APIDot upload returned no file_url: {payload}")
+                    raise RuntimeError(
+                        f"{self.LABEL} upload returned no file_url: {payload}")
 
                 add_log("system", "INFO",
-                        f"Uploaded {src.name} to APIDot storage: {file_url}")
+                        f"Uploaded {src.name} to {self.LABEL} storage: {file_url}")
                 return file_url
 
             except _PermanentUploadError as exc:
                 add_log("system", "ERROR",
-                        f"APIDot rejected {src.name} permanently: {exc}")
-                raise RuntimeError(f"APIDot rejected {src.name}: {exc}") from exc
+                        f"{self.LABEL} rejected {src.name} permanently: {exc}")
+                raise RuntimeError(f"{self.LABEL} rejected {src.name}: {exc}") from exc
 
             except (requests.RequestException, RuntimeError, ValueError, KeyError) as exc:
                 last_exc = exc
                 if attempt < UPLOAD_MAX_RETRIES:
                     wait = UPLOAD_RETRY_DELAY * (4 if "429" in str(exc) else 1)
                     add_log("system", "WARNING",
-                            f"APIDot upload attempt {attempt}/{UPLOAD_MAX_RETRIES} "
+                            f"{self.LABEL} upload attempt {attempt}/{UPLOAD_MAX_RETRIES} "
                             f"failed for {src.name}: {exc}. Retrying in {wait}s…")
                     time.sleep(wait)
 
         raise RuntimeError(
-            f"APIDot file upload failed after {UPLOAD_MAX_RETRIES} attempts: {last_exc}"
+            f"{self.LABEL} file upload failed after {UPLOAD_MAX_RETRIES} "
+            f"attempts: {last_exc}"
         )
+
+
+class PoyoFileUploader(ApidotFileUploader):
+    """PoYo's copy of the APIDot upload contract (its own host and key)."""
+
+    LABEL = "PoYo"
+    URL = POYO_UPLOAD_URL
+    KEY_SETTING = "poyo_api_key"
+    RATE_NOTE = "10/min"
+
+
+def data_uri_for(local_path: str, max_px: int = DATA_URI_MAX_PX,
+                 max_bytes: int = DATA_URI_MAX_BYTES) -> str:
+    """
+    A compact `data:` URI for one reference image (KovAPI takes references in
+    the JSON body). JPEG at quality 90, or PNG when the image has transparency
+    so a client's logo keeps its alpha; shrunk until it fits *max_bytes*.
+    Raises when the file is not an image — an unreadable reference would be a
+    400 at submit anyway, and the generator skips a failed reference.
+    """
+    import base64
+    import io
+
+    from PIL import Image
+
+    src = Path(local_path)
+    if not src.exists():
+        raise FileNotFoundError(f"Image not found: {local_path}")
+    with Image.open(src) as img:
+        img.load()
+        has_alpha = (img.mode in ("RGBA", "LA", "PA")
+                     or (img.mode == "P" and "transparency" in img.info))
+        work = img.convert("RGBA" if has_alpha else "RGB")
+    work.thumbnail((max_px, max_px), Image.LANCZOS)
+
+    mime = "image/png" if has_alpha else "image/jpeg"
+    for _ in range(6):
+        buf = io.BytesIO()
+        if has_alpha:
+            work.save(buf, format="PNG", optimize=True)
+        else:
+            work.save(buf, format="JPEG", quality=90, optimize=True)
+        raw = buf.getvalue()
+        if len(raw) <= max_bytes:
+            break
+        work = work.resize((max(64, int(work.width * 0.75)),
+                            max(64, int(work.height * 0.75))), Image.LANCZOS)
+    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
 
 
 def get_image_host() -> KieFileUploader:

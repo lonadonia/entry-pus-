@@ -25,21 +25,41 @@ webhook is blocked.
              result: data.files[].file_url, status not_started|running|
              finished|failed
 
+    PoYo     the APIDot contract on https://api.poyo.ai
+             webhook `callback_url` (HTTPS only) → /api/poyo-callback
+
+    KovAPI   POST /v1/images/generations (HTTP 202) → GET /v1/images/jobs/{id}
+             webhook `callback_url`            → /api/kovapi-callback
+             result: data[0].url, status queued|processing|succeeded|failed;
+             references inline as data URIs (there is no upload endpoint)
+
+`poll_once()` is the non-blocking step both waits are built from: the
+generator submits every variation first and then polls them together, so three
+variations cost one render time on the single worker instead of three.
+
+A callback URL is only sent when `server_host` is a PUBLIC address: the dev
+default `http://localhost:5000` can never be reached, and KovAPI rejects such a
+submit outright (`invalid_callback_url`: "not a public http(s) address").
+
 Docs: https://docs.kie.ai/market/gpt/… · https://apidot.ai/en/docs/generate-status
+      https://docs.poyo.ai/api-manual/image-series/… · https://docs.kovapi.com/
 """
 
+import ipaddress
 import json
 import os
 import re
 import time
 from typing import Optional, Tuple
+from urllib.parse import urlparse
 
 import redis as redis_lib
 import requests
 
 from app.models import add_log, get_setting
 from bot import ai_config, ai_errors as err, ai_health, ai_registry as reg
-from bot.image_host import ApidotFileUploader, KieFileUploader
+from bot.image_host import (ApidotFileUploader, KieFileUploader,
+                            PoyoFileUploader, data_uri_for)
 
 # ── Shared timing constants ────────────────────────────────────────────────────
 
@@ -50,7 +70,11 @@ RATE_LIMIT_WAIT = 30     # seconds to back off on HTTP 429
 MAX_RETRIES     = 3      # submit attempts for TRANSIENT failures only
 SUBMIT_TIMEOUT  = (10, 60)   # (connect, read) seconds
 
-MAX_REFERENCE_IMAGES = 16   # both providers document a 16-URL cap
+MAX_REFERENCE_IMAGES = 16   # kie.ai, APIDot and PoYo document a 16-URL cap
+# A status endpoint that keeps answering 401/403/404 for a task is not going to
+# start answering: after this many in a row the task is failed instead of
+# being waited on for the full TASK_TIMEOUT on the only worker.
+STATUS_STRIKES = 3
 
 
 def _redis():
@@ -69,6 +93,32 @@ def _public_host() -> str:
     return (get_setting("server_host", "") or "").rstrip("/")
 
 
+_LOCAL_SUFFIXES = (".local", ".localhost", ".internal", ".lan", ".home", ".test")
+
+
+def is_public_url(url: str) -> bool:
+    """
+    Could a provider's servers reach *url*? http(s), a dotted host name or a
+    public IP — not localhost, a private / loopback / link-local address, or a
+    bare container name such as "web".
+    """
+    try:
+        parsed = urlparse(url or "")
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost" or host.endswith(_LOCAL_SUFFIXES):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return "." in host
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
 def _canvas_options(cfg, param_key: str) -> list:
     """The documented enum values for a model's canvas parameter."""
     for spec in cfg.model["params"]:
@@ -85,11 +135,14 @@ def _ratio_value(ratio: str) -> Optional[float]:
         return None
 
 
-def nearest_ratio(hint: str, allowed) -> str:
+def nearest_ratio(hint: str, allowed, strict: bool = True) -> str:
     """
     The allowed ratio closest in shape to *hint* ("2:3" → "3:4" on a model that
     documents no 2:3), or "auto" when nothing comparable exists. Closeness is
     measured on the log scale so 2:3 vs 3:4 and 3:2 vs 4:3 weigh the same.
+
+    *strict=False* always returns the closest documented ratio — for a model
+    that has no "auto" to fall back on.
     """
     import math
     target = _ratio_value(hint)
@@ -103,9 +156,19 @@ def nearest_ratio(hint: str, allowed) -> str:
         distance = abs(math.log(value / target))
         if best_distance is None or distance < best_distance:
             best, best_distance = option, distance
+    if not strict:
+        return best
     # A landscape brief must never be forced onto a portrait canvas (or back):
     # beyond ~1.5× apart, "auto" is the safer answer.
     return best if best_distance is not None and best_distance < 0.41 else "auto"
+
+
+class _TaskGone(Exception):
+    """The status endpoint says this task cannot be read (auth / not found)."""
+
+
+class NotFinal(RuntimeError):
+    """A webhook for a task that is still queued or running — not a result."""
 
 
 class ImageTransport:
@@ -116,6 +179,15 @@ class ImageTransport:
     canvas_param = "aspect_ratio"
     submit_path = ""
     callback_field = "callBackUrl"
+    # Seconds between active status polls for one task. KovAPI suggests 2–3 s;
+    # the others document none and 12 s has been fine.
+    query_interval = QUERY_INTERVAL
+    # PoYo's webhook page: "HTTPS only".
+    callback_requires_https = False
+    # KovAPI takes references inside the JSON body (data URIs), not as URLs
+    # from an upload endpoint.
+    inline_references = False
+    max_references = MAX_REFERENCE_IMAGES
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -124,6 +196,9 @@ class ImageTransport:
             "Authorization": f"Bearer {cfg.api_key}",
             "Content-Type":  "application/json",
         })
+        self._strikes: dict = {}
+        self._callback_refused = False
+        self._callback_note_logged = False
 
     # ── Capabilities ───────────────────────────────────────────────────────────
 
@@ -135,8 +210,16 @@ class ImageTransport:
     def requires_references(self) -> bool:
         return bool(self.cfg.model.get("requires_reference_images"))
 
+    @property
+    def provider_label(self) -> str:
+        return self.cfg.provider_meta.get("label", self.cfg.provider)
+
     def describe(self) -> str:
         return self.cfg.label()
+
+    def prompt_notes(self, aspect: Optional[str]) -> list:
+        """Extra prompt lines this transport's rendering needs (none by default)."""
+        return []
 
     # ── Canvas ─────────────────────────────────────────────────────────────────
 
@@ -163,71 +246,162 @@ class ImageTransport:
             return hint or "auto"
         return nearest_ratio(hint, allowed)
 
+    def effective_ratio(self, hint: Optional[str]) -> Optional[str]:
+        """
+        The aspect ratio this model will actually render for *hint*, as "W:H"
+        — after the move to its nearest documented ratio, a custom W×H, or a
+        provider default — or None when the provider decides by itself. The
+        prompt's canvas line is written from this, so it never describes a
+        21:9 banner the model is rendering at 16:9.
+        """
+        canvas = self.resolve_canvas(hint)
+        if canvas == "custom":
+            from bot.prompt_builder import ratio_from_dimensions
+            return ratio_from_dimensions(f"{self.cfg.params.get('custom_width')}x"
+                                         f"{self.cfg.params.get('custom_height')}") or None
+        if not canvas or canvas == "auto":
+            return self.default_ratio()
+        return canvas
+
+    def default_ratio(self) -> Optional[str]:
+        """What a request without a usable canvas renders (None: the model decides)."""
+        return None
+
     def callback_url(self) -> Optional[str]:
+        """The webhook URL to send, or None when no provider could reach it."""
         host = _public_host()
-        return f"{host}{self.callback_path}" if host else None
+        if not host or self._callback_refused:
+            return None
+        url = f"{host}{self.callback_path}"
+        if not is_public_url(url):
+            return None
+        if self.callback_requires_https and not url.lower().startswith("https://"):
+            return None
+        return url
 
     # ── Delivery: webhook (Redis) + status polling in parallel ─────────────────
 
+    def poll_once(self, task_id: str, query: bool = True, r=None) -> Tuple[str, Optional[str]]:
+        """
+        One non-blocking look at a task: ("success", url) | ("fail", reason) |
+        ("pending", None). Reads the webhook's Redis key first; asks the status
+        endpoint only when *query* is true (callers pace that themselves).
+        """
+        redis_key = f"{self.redis_prefix}{task_id}"
+        if r is not None:
+            try:
+                raw = r.get(redis_key)
+            except Exception:
+                raw = None
+            if raw:
+                try:
+                    data = json.loads(raw)
+                except (ValueError, TypeError):
+                    data = {}
+                add_log("generator", "INFO",
+                        f"Callback data received for {task_id}: "
+                        f"{json.dumps(data)[:1500]}")
+                try:
+                    r.delete(redis_key)   # don't let a stale result be reused
+                except Exception:
+                    pass
+                if not isinstance(data, dict):
+                    data = {}
+                try:
+                    return ("success", self.extract_callback_url(task_id, data))
+                except NotFinal:
+                    pass                  # keep waiting; the status poll decides
+                except RuntimeError as exc:
+                    return ("fail", str(exc))
+
+        if query:
+            state, payload = self.query_task(task_id)
+            if state == "success" and payload:
+                add_log("generator", "SUCCESS",
+                        f"✅ Result via status polling for {task_id}: {payload}")
+                return ("success", payload)
+            if state == "fail":
+                return ("fail", f"Task {task_id} failed: {payload}")
+        return ("pending", None)
+
     def await_result(self, task_id: str, timeout: int = TASK_TIMEOUT) -> str:
         r = _redis()
-        redis_key = f"{self.redis_prefix}{task_id}"
-
         start = time.time()
         add_log("generator", "INFO",
                 f"Awaiting result: taskId={task_id} | timeout={timeout}s | "
-                f"callback key={redis_key} + status polling "
-                f"({self.cfg.provider_meta['label']})")
+                f"callback key={self.redis_prefix}{task_id} + status polling "
+                f"({self.provider_label})")
 
         last_heartbeat = 0
-        last_query = 0
+        last_query = 0.0
         while True:
-            elapsed = int(time.time() - start)
+            elapsed = time.time() - start
             if elapsed > timeout:
                 raise TimeoutError(
                     f"Task {task_id} timed out after {timeout}s — no callback and "
                     f"the status endpoint never reported success. Confirm the task "
                     f"actually ran and that the API key is valid."
                 )
-
-            # 1) Callback fast path (Redis).
-            if r is not None:
-                try:
-                    raw = r.get(redis_key)
-                except Exception:
-                    raw = None
-                if raw:
-                    try:
-                        data = json.loads(raw)
-                    except (ValueError, TypeError):
-                        data = {}
-                    add_log("generator", "INFO",
-                            f"Callback data received [{elapsed}s]: {json.dumps(data)}")
-                    try:
-                        r.delete(redis_key)   # don't let a stale result be reused
-                    except Exception:
-                        pass
-                    return self.extract_callback_url(task_id, data)
-
-            # 2) Polling fallback — less frequent than the Redis poll.
-            if elapsed - last_query >= QUERY_INTERVAL:
+            due = elapsed - last_query >= self.query_interval
+            if due:
                 last_query = elapsed
-                state, payload = self.query_task(task_id)
-                if state == "success" and payload:
-                    add_log("generator", "SUCCESS",
-                            f"✅ Result via status polling [{elapsed}s] for "
-                            f"{task_id}: {payload}")
-                    return payload
-                if state == "fail":
-                    raise RuntimeError(f"Task {task_id} failed: {payload}")
+            state, value = self.poll_once(task_id, query=due, r=r)
+            if state == "success":
+                return value
+            if state == "fail":
+                raise RuntimeError(value)
 
             # Heartbeat every 30 s so a long wait isn't silent.
-            if elapsed and elapsed - last_heartbeat >= 30:
+            if elapsed >= 30 and elapsed - last_heartbeat >= 30:
                 add_log("generator", "INFO",
-                        f"⏳ Still waiting for result [{elapsed}s] taskId={task_id}")
+                        f"⏳ Still waiting for result [{int(elapsed)}s] taskId={task_id}")
                 last_heartbeat = elapsed
 
             time.sleep(POLL_INTERVAL)
+
+    # ── Status endpoint ────────────────────────────────────────────────────────
+
+    def status_request(self, task_id: str) -> Tuple[str, Optional[dict]]:
+        """(url, query params) of the task-status call for *task_id*."""
+        raise NotImplementedError
+
+    def _fetch_status(self, task_id: str) -> Tuple[Optional[dict], Optional[str]]:
+        """
+        GET the task status → (body, None) | (None, None) to try again later |
+        (None, reason) when the endpoint has refused this task STATUS_STRIKES
+        times in a row (bad key, unknown or expired task id).
+        """
+        url, params = self.status_request(task_id)
+        try:
+            resp = self._session.get(url, params=params, timeout=20)
+        except requests.RequestException as exc:
+            add_log("generator", "INFO",
+                    f"{self.provider_label} status query failed for {task_id} "
+                    f"(will retry): {exc}")
+            return None, None
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        code = body.get("code") if isinstance(body, dict) else None
+        effective = (code if isinstance(code, int) and code not in (0, 200)
+                     else resp.status_code)
+        if effective in (401, 403, 404):
+            strikes = self._strikes.get(task_id, 0) + 1
+            self._strikes[task_id] = strikes
+            text = json.dumps(body)[:300] if body is not None else (resp.text or "")[:300]
+            if strikes >= STATUS_STRIKES:
+                return None, (f"the status endpoint answered HTTP {effective} "
+                              f"{strikes} times in a row ({text})")
+            return None, None
+        self._strikes.pop(task_id, None)
+        if resp.status_code >= 400 or not isinstance(body, dict):
+            add_log("generator", "INFO",
+                    f"{self.provider_label} status query for {task_id} returned "
+                    f"HTTP {resp.status_code} (will retry): "
+                    f"{(resp.text or '')[:200]}")
+            return None, None
+        return body, None
 
     # ── Submission with the shared retry / classification policy ──────────────
 
@@ -270,6 +444,7 @@ class ImageTransport:
                     task_id = self.extract_task_id(body)
                     if task_id:
                         ai_health.note_success(self.cfg.provider)
+                        ai_health.note_verified(self.cfg.provider)
                         add_log("generator", "INFO",
                                 f"image submit provider={self.cfg.provider} "
                                 f"model={self.cfg.wire_model} task={task_id} "
@@ -281,6 +456,20 @@ class ImageTransport:
                         details={"keys": sorted(body.keys())[:10]
                                  if isinstance(body, dict) else None})
 
+            if (self._is_callback_rejection(error)
+                    and self.callback_field in payload):
+                # The provider will not accept our webhook address; results
+                # still arrive by polling, so drop it for this and every later
+                # submit instead of failing the variation.
+                self._callback_refused = True
+                payload.pop(self.callback_field, None)
+                add_log("generator", "WARNING",
+                        f"{self.provider_label} refused the callback URL "
+                        f"({error.message}) — resubmitting without it; results "
+                        f"will be read by polling.")
+                continue
+
+            error = self.refine_error(error)
             ai_health.record_failure(self.cfg.provider, error)
             add_log("generator", "WARNING" if error.retryable else "ERROR",
                     f"image submit provider={self.cfg.provider} "
@@ -295,18 +484,46 @@ class ImageTransport:
                                              else attempt * 5, 60)
             time.sleep(delay)
 
+        if last_error is None:            # only callback rejections happened
+            last_error = err.ProviderError(
+                provider=self.cfg.provider, model=self.cfg.model_key,
+                category=err.INVALID_REQUEST, retryable=False, scope=err.REQUEST,
+                message="the provider kept refusing the request")
         raise err.ProviderCallError(last_error)
 
+    @staticmethod
+    def _is_callback_rejection(error: Optional[err.ProviderError]) -> bool:
+        if error is None or error.category != err.INVALID_REQUEST:
+            return False
+        blob = f"{error.provider_code or ''} {error.message or ''}".lower()
+        return "callback" in blob
+
+    def refine_error(self, error: err.ProviderError) -> err.ProviderError:
+        """Provider-specific sharpening of a classified failure (hook)."""
+        return error
+
     def with_callback(self, payload: dict) -> dict:
-        """Attach the webhook field when a public host is configured."""
+        """Attach the webhook field when a reachable public host is configured."""
         callback = self.callback_url()
         if callback:
             payload[self.callback_field] = callback
-        else:
-            payload.pop(self.callback_field, None)
-            add_log("generator", "WARNING",
-                    "server_host not configured — no callback URL sent; results "
-                    "will be retrieved by polling the status endpoint.")
+            return payload
+        payload.pop(self.callback_field, None)
+        if not self._callback_note_logged:
+            self._callback_note_logged = True
+            host = _public_host()
+            if not host:
+                reason = "server_host is not configured"
+            elif self._callback_refused:
+                reason = f"{self.provider_label} refused the callback URL"
+            elif not is_public_url(host):
+                reason = (f"server_host {host} is not a public address the "
+                          f"provider could reach")
+            else:
+                reason = f"{self.provider_label} delivers webhooks to HTTPS only"
+            add_log("generator", "INFO",
+                    f"No callback URL sent ({reason}); results are read by "
+                    f"polling the status endpoint.")
         return payload
 
     # ── Subclass contract ──────────────────────────────────────────────────────
@@ -394,22 +611,19 @@ class KieImageTransport(ImageTransport):
                     f"Unrecognized taskId format: {task_id!r}")
         return task_id
 
+    def status_request(self, task_id: str):
+        return self.cfg.base_url + self.RECORD_INFO_PATH, {"taskId": task_id}
+
     def query_task(self, task_id: str) -> Tuple[str, Optional[str]]:
         """
         GET recordInfo → ("success", url) | ("fail", reason) | ("pending", None)
         | ("unknown", None). `data.state` ∈ {waiting,queuing,generating,success,
         fail}; on success `data.resultJson` is a JSON string holding resultUrls.
         """
-        try:
-            resp = self._session.get(
-                self.cfg.base_url + self.RECORD_INFO_PATH,
-                params={"taskId": task_id}, timeout=20,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            add_log("generator", "INFO",
-                    f"recordInfo query failed for {task_id} (will retry): {exc}")
+        body, gone = self._fetch_status(task_id)
+        if gone:
+            return ("fail", gone)
+        if body is None:
             return ("unknown", None)
 
         data = body.get("data") if isinstance(body.get("data"), dict) else {}
@@ -548,7 +762,7 @@ class KieImageTransport(ImageTransport):
 
 class ApidotImageTransport(ImageTransport):
     """
-    APIDot's async submit contract.
+    APIDot's async submit contract (PoYo implements the same one).
 
     One model (`gpt-image-2.5`, Flare or Sunburst) covers both generation and
     editing: adding `input.image_urls` switches it into editing mode, so there
@@ -592,32 +806,58 @@ class ApidotImageTransport(ImageTransport):
             payload_input[spec.get("wire") or key] = value
 
         size = self.resolve_canvas(aspect_hint)
+        gpt25 = self.cfg.model.get("size_rules") == reg.GPT25_SIZE_RULES
+        resolution = str(payload_input.get("resolution") or "1K")
         if size == "custom":
-            size = f"{int(params.get('custom_width', 1024))}x" \
-                   f"{int(params.get('custom_height', 1024))}"
-        payload_input[self.canvas_param] = size
+            width = params.get("custom_width", 1024)
+            height = params.get("custom_height", 1024)
+            if gpt25:
+                # Saved params already passed apply_constraints; this keeps an
+                # older stored value from ever reaching the wire invalid.
+                width, height, _ = reg.gpt25_custom_size(width, height)
+                if resolution == "1K":
+                    resolution = payload_input["resolution"] = "2K"
+                if max(width, height) >= reg.GPT25_EDGE_MAX:
+                    resolution = payload_input["resolution"] = "4K"
+            size = f"{int(width)}x{int(height)}"
+        if gpt25 and size == "auto" and resolution != "1K":
+            # "`auto` only supports 1K". Leaving the field out gets the
+            # documented default (a 1:1 square) at the chosen tier.
+            size = None
+        if size:
+            payload_input[self.canvas_param] = size
+        else:
+            payload_input.pop(self.canvas_param, None)
+
+        if (gpt25 and payload_input.get("background") == "transparent"
+                and payload_input.get("output_format") == "jpeg"):
+            payload_input["output_format"] = "png"
 
         if reference_urls:
             payload_input["image_urls"] = list(reference_urls)[:MAX_REFERENCE_IMAGES]
 
         return {"model": self.cfg.wire_model, "input": payload_input}
 
+    def default_ratio(self) -> Optional[str]:
+        # GPT Image 2.5 drops `auto` above 1K, and an omitted size is 1:1.
+        gpt25 = self.cfg.model.get("size_rules") == reg.GPT25_SIZE_RULES
+        resolution = str(self.cfg.params.get("resolution") or "1K")
+        return "1:1" if gpt25 and resolution != "1K" else None
+
     def extract_task_id(self, body: dict) -> Optional[str]:
         data = body.get("data") if isinstance(body.get("data"), dict) else body
         task_id = data.get("task_id") or data.get("taskId")
         return str(task_id) if task_id else None
 
+    def status_request(self, task_id: str):
+        return self.cfg.base_url + self.STATUS_PATH + str(task_id), None
+
     def query_task(self, task_id: str) -> Tuple[str, Optional[str]]:
         """GET /api/generate/status/{task_id} → not_started|running|finished|failed."""
-        try:
-            resp = self._session.get(
-                self.cfg.base_url + self.STATUS_PATH + str(task_id), timeout=20,
-            )
-            resp.raise_for_status()
-            body = resp.json()
-        except (requests.RequestException, ValueError) as exc:
-            add_log("generator", "INFO",
-                    f"APIDot status query failed for {task_id} (will retry): {exc}")
+        body, gone = self._fetch_status(task_id)
+        if gone:
+            return ("fail", gone)
+        if body is None:
             return ("unknown", None)
 
         data = body.get("data") if isinstance(body.get("data"), dict) else body
@@ -628,8 +868,8 @@ class ApidotImageTransport(ImageTransport):
             if url:
                 return ("success", url)
             add_log("generator", "WARNING",
-                    f"APIDot reported finished but no file_url for {task_id}: "
-                    f"{json.dumps(body)[:600]}")
+                    f"{self.provider_label} reported finished but no file_url "
+                    f"for {task_id}: {json.dumps(body)[:600]}")
             return ("unknown", None)
 
         if status in ("failed", "error", "cancelled"):
@@ -676,7 +916,7 @@ class ApidotImageTransport(ImageTransport):
         code = data.get("code")
         if code is not None and code not in (200, 0):
             reason = data.get("msg") or data.get("message") or f"code={code}"
-            raise RuntimeError(f"APIDot task {task_id} failed: {reason}")
+            raise RuntimeError(f"{self.provider_label} task {task_id} failed: {reason}")
 
         status = (body.get("status") or "").lower()
         add_log("generator", "INFO",
@@ -684,7 +924,9 @@ class ApidotImageTransport(ImageTransport):
 
         if status in ("failed", "error", "cancelled"):
             reason = body.get("error_message") or body.get("message") or status
-            raise RuntimeError(f"APIDot task {task_id} failed: {reason}")
+            raise RuntimeError(f"{self.provider_label} task {task_id} failed: {reason}")
+        if status in ("not_started", "running"):
+            raise NotFinal(f"{self.provider_label} task {task_id} is {status}")
 
         url = self._extract_file_url(body)
         if url:
@@ -704,12 +946,208 @@ class ApidotImageTransport(ImageTransport):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  PoYo
+# ══════════════════════════════════════════════════════════════════════════════
+
+class PoyoImageTransport(ApidotImageTransport):
+    """
+    PoYo documents APIDot's contract field for field — submit
+    `{model, callback_url?, input:{prompt, image_urls, size, resolution,
+    quality, background, output_format}}`, status `not_started|running|
+    finished|failed` with `data.files[].file_url`, the same upload route and
+    the same webhook body — on its own host, key and webhook path. `input` is
+    `additionalProperties: false`, which the registry-driven builder already
+    respects (only declared, documented fields are sent).
+    """
+
+    callback_path = "/api/poyo-callback"
+    redis_prefix = "poyo_result:"
+    callback_requires_https = True
+
+    def host_reference(self, local_path: str) -> str:
+        return PoyoFileUploader(self.cfg.api_key).upload(local_path)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  KovAPI
+# ══════════════════════════════════════════════════════════════════════════════
+
+class KovapiImageTransport(ImageTransport):
+    """
+    KovAPI's OpenAI-style asynchronous image jobs.
+
+        POST /v1/images/generations  {model, prompt, size, resolution, quality,
+                                      image | images, callback_url}
+          → HTTP 202 {"id":"img_…","object":"image.generation.job",
+                      "status":"queued","created":…,"model":…}
+        GET  /v1/images/jobs/{id}    queued (queue_position, eta_seconds) |
+                                     processing | succeeded (data[0].url) |
+                                     failed (error{code,message})
+
+    Errors use real HTTP statuses and `error.code` is the stable field ("its
+    wording can change. Don't match on it"). References are sent inline as data
+    URIs: the API has no upload endpoint and accepts URL, data URI or base64.
+    """
+
+    callback_path = "/api/kovapi-callback"
+    redis_prefix = "kovapi_result:"
+    canvas_param = "size"
+    submit_path = "/v1/images/generations"
+    callback_field = "callback_url"
+    JOB_PATH = "/v1/images/jobs/"
+    # "Poll every 2–3 seconds": 5 s per job keeps a three-variation batch near
+    # 36 requests a minute, inside a key's per-minute limit.
+    query_interval = 5
+    inline_references = True
+    max_references = 8
+    # Above this balance a 402 cannot be the pre-deduction reserve of a batch
+    # (3 variations × 10 credits at 4K): it is the key's own budget or cap.
+    KEY_CAP_MIN_BALANCE = 30.0
+    # At 1K the gateway renders the nearest 1:1 / 3:2 / 2:3 frame and
+    # centre-crops it ("the further from 3:2, 2:3 and 1:1, the more edge is
+    # cut off; to keep edge content, put it in the middle").
+    _NATIVE_1K = {"1:1", "3:2", "2:3", "auto", None}
+
+    def _resolution(self) -> str:
+        return str(self.cfg.params.get("resolution") or "1K")
+
+    def default_ratio(self) -> Optional[str]:
+        return "1:1"                         # "size … default 1:1 square"
+
+    def build_payload(self, prompt, aspect_hint, reference_urls) -> dict:
+        params = self.cfg.params
+        payload = {"model": self.cfg.wire_model, "prompt": prompt}
+        size = self.resolve_canvas(aspect_hint)
+        if size and size not in ("auto", "custom"):
+            payload["size"] = size          # omitted → the documented 1:1
+        resolution = self._resolution()
+        payload["resolution"] = resolution
+        # "quality … only applies to 1K; 2K and 4K always use medium."
+        if resolution == "1K" and params.get("quality"):
+            payload["quality"] = params["quality"]
+        refs = [u for u in (reference_urls or []) if u][: self.max_references]
+        if len(refs) == 1:
+            payload["image"] = refs[0]
+        elif refs:
+            payload["images"] = refs
+        return payload
+
+    def prompt_notes(self, aspect: Optional[str]) -> list:
+        if self._resolution() != "1K" or self.resolve_canvas(aspect) in self._NATIVE_1K:
+            return []
+        return ["SAFE AREA: the canvas is centre-cropped after rendering — keep "
+                "every word and every key element well inside the central area, "
+                "away from all four edges."]
+
+    def extract_task_id(self, body: dict) -> Optional[str]:
+        job = body if isinstance(body, dict) else {}
+        if not job.get("id") and isinstance(job.get("data"), dict):
+            job = job["data"]
+        task_id = job.get("id")
+        return str(task_id) if task_id else None
+
+    def status_request(self, task_id: str):
+        return self.cfg.base_url + self.JOB_PATH + str(task_id), None
+
+    @staticmethod
+    def _first_url(job: dict) -> Optional[str]:
+        data = job.get("data")
+        items = data if isinstance(data, list) else ([data] if isinstance(data, dict) else [])
+        for item in items:
+            url = item.get("url") if isinstance(item, dict) else item
+            if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+                return url
+        return None
+
+    def _job_state(self, task_id: str, job: dict) -> Tuple[str, Optional[str]]:
+        status = (job.get("status") or "").lower()
+        if status == "succeeded":
+            url = self._first_url(job)
+            if url:
+                return ("success", url)
+            add_log("generator", "WARNING",
+                    f"KovAPI reported succeeded but no url for {task_id}: "
+                    f"{json.dumps(job)[:600]}")
+            return ("unknown", None)
+        if status in ("failed", "cancelled", "canceled", "expired"):
+            error = job.get("error") if isinstance(job.get("error"), dict) else {}
+            code = error.get("code") or error.get("type") or ""
+            message = error.get("message") or status
+            return ("fail", f"{code}: {message}" if code else message)
+        return ("pending", None)            # queued / processing
+
+    def query_task(self, task_id: str) -> Tuple[str, Optional[str]]:
+        body, gone = self._fetch_status(task_id)
+        if gone:
+            return ("fail", gone)
+        if body is None:
+            return ("unknown", None)
+        job = body.get("data") if (isinstance(body.get("data"), dict)
+                                   and not body.get("status")) else body
+        return self._job_state(task_id, job)
+
+    def extract_callback_url(self, task_id: str, data: dict) -> str:
+        """
+        The webhook pushes "the same result as the query endpoint", inside a
+        Standard-Webhooks envelope `{id:"evt_…", object:"event",
+        type:"image.completed"|"image.failed", data:<job>}`. Both the envelope
+        and a bare job object are accepted.
+        """
+        job = data
+        event_type = str(data.get("type") or "")
+        if isinstance(data.get("data"), dict) and (
+                data.get("object") == "event" or event_type.startswith("image.")):
+            job = data["data"]
+        state, value = self._job_state(task_id, job)
+        if state == "success":
+            add_log("generator", "SUCCESS",
+                    f"✅ Image URL received for {task_id}: {value}")
+            return value
+        if state == "fail" or event_type == "image.failed":
+            raise RuntimeError(f"KovAPI job {task_id} failed: "
+                               f"{value or event_type or 'failed'}")
+        if (job.get("status") or "").lower() in ("queued", "processing"):
+            raise NotFinal(f"KovAPI job {task_id} is {job.get('status')}")
+        raise RuntimeError(
+            f"KovAPI job {task_id} callback carried no image URL "
+            f"(status {job.get('status')!r}). Data keys: {list(data.keys())}")
+
+    def host_reference(self, local_path: str) -> str:
+        return data_uri_for(local_path)
+
+    def refine_error(self, error: err.ProviderError) -> err.ProviderError:
+        """
+        Tell a capped KEY from an empty ACCOUNT. Every one of KovAPI's 402s is
+        `insufficient_quota` — balance below the overdraft floor, the key's
+        daily budget, the key's total quota, or a burst outrunning the
+        pre-deduction reserve — and the message wording is not stable. A
+        healthy balance rules out the first and the last.
+        """
+        if error.category != err.BILLING or error.is_key_limit:
+            return error
+        try:
+            info = ai_health.fetch_balance(self.cfg.provider, api_key=self.cfg.api_key)
+        except Exception:
+            return error
+        credits = info.get("credits") if info.get("ok") else None
+        if credits is not None and credits >= self.KEY_CAP_MIN_BALANCE:
+            error.details = dict(error.details or {}, billing_kind=err.KEY_LIMIT,
+                                 balance=credits)
+            error.message = (f"{error.message} (account balance {credits:g} "
+                             f"credits — this key's daily budget or total quota "
+                             f"is the limit)")
+        return error
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Factory
 # ══════════════════════════════════════════════════════════════════════════════
 
 _TRANSPORTS = {
     "kie_image":    KieImageTransport,
     "apidot_image": ApidotImageTransport,
+    "poyo_image":   PoyoImageTransport,
+    "kovapi_image": KovapiImageTransport,
 }
 
 
@@ -774,11 +1212,7 @@ def probe_provider(provider: str) -> dict:
         return {"ok": False, "message": str(exc), "category": err.CONFIGURATION}
 
     transport = transport_for(cfg)
-    probe_id = "connectivity-probe-0000"
-    url = (cfg.base_url + KieImageTransport.RECORD_INFO_PATH
-           if isinstance(transport, KieImageTransport)
-           else cfg.base_url + ApidotImageTransport.STATUS_PATH + probe_id)
-    params = {"taskId": probe_id} if isinstance(transport, KieImageTransport) else None
+    url, params = transport.status_request("connectivity-probe-0000")
 
     try:
         resp = transport._session.get(url, params=params, timeout=(10, 20))
@@ -805,3 +1239,56 @@ def probe_provider(provider: str) -> dict:
     ai_health.record_failure(provider, error)
     return {"ok": False, "message": error.operator_message(),
             "category": error.category, "detail": error.log_line()}
+
+
+# The cheapest real job each provider documents. Only keys the model declares
+# are overridden, so nothing undocumented is ever sent.
+_PROBE_OVERRIDES = {"quality": "low", "resolution": "1K", "size": "1:1",
+                    "aspect_ratio": "1:1", "background": "auto",
+                    "output_format": "png"}
+_PROBE_PROMPT = "A plain flat grey circle centred on a white background."
+
+
+def probe_generation(provider: str, model_key: Optional[str] = None) -> dict:
+    """
+    "Test model" for an image-only provider: submit ONE real job at the
+    cheapest documented settings (1K, low quality, square) and report whether
+    the provider accepted it. Accepting proves the key, the balance AND any
+    per-key cap — which no free check can see. The job is not waited for.
+
+    Spends one low-tier image (KovAPI: 1 credit = $0.005). Never raises.
+    Returns {ok, message, model, category, latency_ms, task_id}.
+    """
+    started = time.time()
+    models = reg.models_for(provider, reg.CATEGORY_IMAGE, selectable_only=True)
+    if not models:
+        return {"ok": False, "message": "No image model is registered for this provider.",
+                "model": None, "category": err.CONFIGURATION}
+    by_key = {m["key"]: m for m in models}
+    chosen = (by_key.get(model_key or "")
+              or by_key.get(ai_config.selected_model_key(reg.CATEGORY_IMAGE))
+              or models[0])
+    try:
+        cfg = ai_config.resolve(reg.CATEGORY_IMAGE, chosen["key"])
+        declared = {spec["key"] for spec in cfg.model["params"]}
+        cfg.params = dict(cfg.params, **{k: v for k, v in _PROBE_OVERRIDES.items()
+                                         if k in declared})
+        transport = transport_for(cfg)
+        # Nobody waits for this job, so no webhook is registered for it.
+        transport._callback_refused = transport._callback_note_logged = True
+        task_id = transport.submit(transport.build_payload(
+            prompt=_PROBE_PROMPT, aspect_hint="1:1", reference_urls=[]))
+        latency = int((time.time() - started) * 1000)
+        return {"ok": True, "model": chosen["key"], "category": None,
+                "task_id": task_id, "latency_ms": latency,
+                "message": f"{cfg.label()} accepted a 1K test image "
+                           f"(task {task_id}) in {latency} ms."}
+    except err.ProviderCallError as exc:
+        return {"ok": False, "model": chosen["key"], "category": exc.error.category,
+                "message": exc.error.operator_message(),
+                "detail": exc.error.log_line(),
+                "latency_ms": int((time.time() - started) * 1000)}
+    except Exception as exc:
+        return {"ok": False, "model": chosen["key"], "category": err.CONFIGURATION,
+                "message": str(exc)[:300],
+                "latency_ms": int((time.time() - started) * 1000)}

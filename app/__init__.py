@@ -168,6 +168,11 @@ def _register_request_guards(app: Flask) -> None:
     from app.models import Space
     from app.routes.auth import token_from_request, verify_token
 
+    # Image providers POST task results here; they carry no login cookie and
+    # no Space header (the worker matches results by task id).
+    _WEBHOOK_PATHS = {"/api/kie-callback", "/api/apidot-callback",
+                      "/api/poyo-callback", "/api/kovapi-callback"}
+
     def _is_public(path: str) -> bool:
         return (
             path == "/login"
@@ -175,8 +180,7 @@ def _register_request_guards(app: Flask) -> None:
             or path.startswith("/static/")
             or path.startswith("/storage/")
             or path == "/favicon.ico"
-            or path == "/api/kie-callback"    # external webhook — no auth/space
-            or path == "/api/apidot-callback" # external webhook — no auth/space
+            or path in _WEBHOOK_PATHS          # provider webhooks — no auth/space
         )
 
     def _wants_json(path: str) -> bool:

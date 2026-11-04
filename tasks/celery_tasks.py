@@ -324,12 +324,22 @@ def _ai_canary(category, space_id):
 
     Returns a ProviderError only for an account-level stop; a flaky route
     (UPSTREAM/TIMEOUT) is not a reason to refuse the batch.
+
+    A provider that serves only images (PoYo, KovAPI) has no chat model to
+    ping: its canary is one real 1K image job, skipped while a real submission
+    in the last few hours already proved the key works.
     """
     try:
-        from bot import ai_config, ai_errors
-        from bot.llm import probe_model
+        from bot import ai_config, ai_errors, ai_health, ai_registry
         provider = ai_config.resolve(category).provider
-        result = probe_model(provider)
+        if ai_registry.serves(provider, ai_registry.CATEGORY_CHAT):
+            from bot.llm import probe_model
+            result = probe_model(provider)
+        else:
+            if ai_health.recently_verified(provider, space_id):
+                return None
+            from bot.image_providers import probe_generation
+            result = probe_generation(provider)
         if result.get("ok") or result.get("category") not in ai_errors.PROVIDER_STOP_CATEGORIES:
             return None
         # probe_model's failed call already opened the breaker — read it back
@@ -529,6 +539,18 @@ def _is_config_error(exc: BaseException) -> bool:
     return any(phrase in msg for phrase in _CONFIG_ERROR_PHRASES)
 
 
+def _reset_contest_status(contest_id: int, current: str, target: str) -> bool:
+    """Move a contest from *current* to *target* status (only from *current*)."""
+    from app import db
+    from app.models import Contest
+    contest = db.session.get(Contest, contest_id)
+    if contest is None or contest.status != current:
+        return False
+    contest.status = target
+    db.session.commit()
+    return True
+
+
 def _mark_contest_failed(contest_id: int, reason: str, module: str) -> None:
     """Set contest.status='failed' and log the reason. Runs inside _app_ctx()."""
     from app import db
@@ -657,13 +679,25 @@ def analyze_contest(self, space_id, contest_id: int):
             return {"contest_id": contest_id, "error": reason, "no_retry": True}
 
         # ── Transient: one bounded retry, then fail ──────────────────────────
+        # The analyzer only runs a 'pending' contest and set this one to
+        # 'analyzing' before it failed, so without this reset the retry just
+        # logged "expected 'pending'. Skipping." and the contest sat in
+        # 'analyzing' until the next worker restart.
+        try:
+            with _app_ctx(space_id):
+                _reset_contest_status(contest_id, "analyzing", "pending")
+        except Exception as inner:
+            logger.warning("Could not reset contest %d for retry: %s", contest_id, inner)
         try:
             _emit("task_status", {"task": "analyze", "status": "retrying",
                                   "contest_id": contest_id}, space_id)
             self.retry(countdown=30, exc=exc)
-        except self.MaxRetriesExceededError:
-            # Retries exhausted — mark failed so the contest isn't orphaned
-            # forever in 'analyzing' status (it'd never get reprocessed).
+        except Retry:
+            raise                    # the retry is queued
+        except Exception:
+            # Retries exhausted. self.retry(exc=…) re-raises the ORIGINAL
+            # exception here, not MaxRetriesExceededError — catching only that
+            # one left the contest orphaned in 'analyzing' forever.
             reason = error.operator_message() if error is not None else str(exc)
             try:
                 with _app_ctx(space_id):
@@ -880,9 +914,12 @@ def generate_designs(self, space_id, contest_id: int):
 
         try:
             self.retry(countdown=60, exc=exc)
-        except self.MaxRetriesExceededError:
-            # Retries exhausted — mark failed so the contest isn't orphaned
-            # forever in 'generating' status (it'd never get reprocessed).
+        except Retry:
+            raise                    # the retry is queued
+        except Exception:
+            # Retries exhausted (self.retry re-raises the original exception,
+            # not MaxRetriesExceededError) — mark failed so the contest isn't
+            # orphaned forever in 'generating' status.
             try:
                 with _app_ctx(space_id):
                     _mark_contest_failed(contest_id, str(exc), "generator")

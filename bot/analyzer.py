@@ -53,17 +53,26 @@ IMAGE_MAX_PX = 1024
 # Brief-length handling. Briefs at or under this length are sent verbatim;
 # longer ones are condensed first (preserving every concrete requirement) so we
 # never silently drop requirements that live past an arbitrary character cut.
-BRIEF_DIRECT_LIMIT = 6_000
+# 15k characters is ~4k tokens — nothing for the models in use — and a
+# condensed brief is where requirements get lost: the old 6k limit squeezed
+# a long brief into 1,400 tokens, list of names and all. (The projects side
+# already sends 15k whole.)
+BRIEF_DIRECT_LIMIT = 15_000
 # Absolute cap on how much raw brief text we ever feed the condenser (bounds
 # token cost on pathologically long pastes).
-BRIEF_HARD_CAP = 24_000
+BRIEF_HARD_CAP = 40_000
+CONDENSE_MAX_TOKENS = 3_000
 
 # Bumped whenever the prompt_data schema changes shape — lets downstream code
 # tell analyses apart. v3 adds the image-model plan: deliverable, copy_blocks,
 # brief_facts, layout_plan, placeholders, concepts, reference_roles and
-# text_density. Earlier analyses stay valid; the prompt builder and the Art
-# Director fill those gaps from the brief itself.
-ANALYSIS_VERSION = 3
+# text_density. v4 adds `ai_policy` (+ quote), grounding — every copy block
+# carries `source` ("brief" when its words occur in the client's material,
+# "designer" when the analysis wrote them) and required text the brief never
+# contained moves to `unverified_text` — and `analysis_warnings`. Earlier
+# analyses stay valid; the prompt builder and the Art Director fill gaps from
+# the brief itself.
+ANALYSIS_VERSION = 4
 
 # ── System prompts ─────────────────────────────────────────────────────────────
 
@@ -125,7 +134,7 @@ commas. Use EXACTLY these keys — never omit a key; use "" or [] when unknown:
   "forbidden_colors": ["Colors the client says to avoid"],
   "design_style": "Dominant style: modern | luxury | minimal | playful | corporate | handmade | bold | vintage | flat | elegant | techno | other",
   "mood": "Emotional tone (e.g. professional, warm, energetic, premium)",
-  "aspect_ratio": "One of: auto | 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 4:5",
+  "aspect_ratio": "One of: auto | 1:1 | 16:9 | 9:16 | 4:3 | 3:4 | 3:2 | 2:3 | 4:5 | 5:4 | 21:9",
   "dimensions": "Exact pixel/print size if the brief states one (e.g. \\"1080x1080 px\\"), else \\"\\"",
   "deliverables": ["Each distinct asset requested (e.g. primary logo, favicon, story version)"],
   "reference_files_summary": "1-2 sentences on what the attachments/reference images show, or \\"\\" if none",
@@ -135,8 +144,15 @@ commas. Use EXACTLY these keys — never omit a key; use "" or [] when unknown:
   "submission_description": "A natural 2-3 sentence note in a designer's first-person voice to send with the entry: the concept and 1-2 design choices visible in the image. Do not promise files, formats, revisions or working methods (vector, SVG, layers, source files, print specs) and never claim the work is hand-made — the entry is one image.",
   "image_prompt": "80-150 words describing the strongest version of the design for an image model: the concept, composition, typography, palette with placement, and finish. Quote every piece of text exactly.",
   "colors": ["Up to 5 hex codes (#RRGGBB) for the recommended palette — derive hexes even when the brief names colors verbally"],
+  "ai_policy": "prohibited | allowed | not_mentioned — the brief's stance on AI-generated or AI-assisted entries",
+  "ai_policy_quote": "The brief's exact sentence about AI, copied verbatim, or \"\" when it says nothing about AI",
   "win_score": 0.0
 }
+
+required_text — ONLY words the client actually wrote and asked to appear,
+copied exactly as written (same spelling, capitalisation and punctuation). Do
+not translate, correct or improve them, and never put a tagline, slogan or
+year here that the brief does not contain.
 
 copy_blocks — ALL wording the image should contain, in reading order:
   - Always include every required_text item, unchanged.
@@ -163,6 +179,8 @@ reference_roles — one entry per reference image:
 aspect_ratio guidance (if dimensions are given, pick the listed ratio closest to them):
   - Logo / icon / avatar / square social tile / t-shirt / sticker → "1:1"
   - Website hero / banner / header / thumbnail / slide / multi-item board → "16:9"
+  - Very wide banner, cover photo or header (about 2.3:1 and wider) → "21:9"
+  - Near-square landscape print or post → "5:4"
   - Full web page / landing page / long homepage / app screen / story → "9:16"
   - Flyer / poster / book cover / menu / A-size print → "2:3"
   - Portrait social post → "4:5";  business card / postcard / landscape print → "3:2"
@@ -183,8 +201,8 @@ win_score (0.0-1.0): START at 0.5, then adjust using the CONTEST METADATA block:
              -0.15 photo-real human faces required | -0.10 multiple complex deliverables |
              -0.15 if any of {requires source file, requires logo redraw}
   Clamp to [0.05, 0.95]. Put the result only in win_score — show no math elsewhere.
-  NOTE: a brief that says "no AI" / "no AI-generated work" is NOT a negative —
-  do not penalize it and do not emit any risk flag for it.
+  The brief's stance on AI-generated work goes in ai_policy / ai_policy_quote,
+  never in risk_flags or win_score.
 """
 
 
@@ -300,7 +318,8 @@ class ContestAnalyzer:
         snippet = text[:BRIEF_HARD_CAP]
         try:
             condensed = self.client.chat(
-                _CONDENSE_SYSTEM, snippet, max_tokens=1400, temperature=0.2,
+                _CONDENSE_SYSTEM, snippet, max_tokens=CONDENSE_MAX_TOKENS,
+                temperature=0.2,
                 reasoning="low",   # mechanical condensation — speed over depth
                 tools=False,
                 operation="condense_brief", contest_id=contest_id,
@@ -314,8 +333,8 @@ class ContestAnalyzer:
                 contest_id=contest_id,
             )
 
-        head = text[:4_000]
-        tail = text[-2_000:]
+        head = text[:10_000]
+        tail = text[-4_000:]
         return f"{head}\n\n[… brief truncated for length …]\n\n{tail}", True
 
     # ── Brief analysis ─────────────────────────────────────────────────────────
@@ -348,6 +367,21 @@ class ContestAnalyzer:
         finally:
             processor.cleanup()
 
+    @staticmethod
+    def client_sources(contest: Contest, attachments: Optional[dict] = None) -> str:
+        """
+        Everything the CLIENT supplied, as one text: the title (a slug with the
+        id), the whole brief, every extracted document, and the vision notes on
+        their reference images (which name the text on an existing logo).
+        Grounding checks run against this, never against the condensed brief.
+        """
+        title = re.sub(r"-\d{5,}$", "", contest.title or "").replace("-", " ")
+        parts = [title, contest.description or ""]
+        for doc in (attachments or {}).get("documents") or []:
+            parts.append(doc.get("text") or "")
+        parts.append((attachments or {}).get("image_analysis") or "")
+        return "\n".join(p for p in parts if p)
+
     def _compose_and_analyze(self, contest: Contest, attachments: dict) -> dict:
         """
         Assemble the brief context from the contest + attachment_summary, run the
@@ -355,7 +389,29 @@ class ContestAnalyzer:
         normalised analysis dict.
         """
         user_message, brief_truncated = self.build_brief_message(contest, attachments)
-        result = self.run_brief_analysis(contest, user_message, brief_truncated)
+        sources = self.client_sources(contest, attachments)
+        result = self.run_brief_analysis(contest, user_message, brief_truncated,
+                                         sources=sources)
+
+        # ── The client forbids AI-generated work (the attached documents, or a
+        # wording the free pre-check did not recognise but the analysis quoted
+        # verbatim) → skip before a single image is paid for.
+        rule = ai_prohibition(result, sources) if _skip_no_ai_enabled() else ""
+        if rule:
+            result["skip_reason"] = f"The brief forbids AI-generated entries: “{rule}”"
+            contest.prompt_data = json.dumps(result)
+            contest.win_score   = float(result.get("win_score", 0.0))
+            contest.status      = "skipped"
+            db.session.commit()
+            add_log(
+                "analyzer", "WARNING",
+                f"⏭ Contest {contest.id} forbids AI-generated work (“{rule}”) — "
+                f"skipped, no designs generated. Every entry this bot makes is "
+                f"AI-generated; change “Skip Contests That Forbid AI” in Settings "
+                f"to enter such contests anyway.",
+                contest_id=contest.id,
+            )
+            return None
 
         # ── Non-image deliverables → skip (verified live: Freelancer rejects an
         # image upload on a video contest with "Please upload at least one
@@ -442,10 +498,13 @@ class ContestAnalyzer:
         return "\n\n---\n\n".join(sections), brief_truncated
 
     def run_brief_analysis(self, contest: Contest, user_message: str,
-                           brief_truncated: bool) -> dict:
+                           brief_truncated: bool,
+                           sources: Optional[str] = None) -> dict:
         """
         The structured Brief Intelligence call → normalised analysis dict.
         Persists nothing, so it can also be run on its own (live evaluation).
+        *sources* (the client's own material) grounds the result — see
+        `_normalize_brief`.
         """
         # ── Structured analysis call ───────────────────────────────────────────
         add_log(
@@ -460,7 +519,9 @@ class ContestAnalyzer:
             # truncated body is the main cause of an unparseable response). The
             # v3 plan fields add roughly a thousand tokens to a layout brief.
             max_tokens=4000,
-            temperature=0.5,
+            # Extraction first, creativity second: the concepts still vary, the
+            # required text and facts must not.
+            temperature=0.3,
             json_object=True,
             operation="brief_analysis",
             contest_id=contest.id,
@@ -477,7 +538,8 @@ class ContestAnalyzer:
             )
             data = {}
 
-        return _normalize_brief(data, contest, brief_truncated=brief_truncated)
+        return _normalize_brief(data, contest, brief_truncated=brief_truncated,
+                                sources=sources)
 
     # ── Main entry point ───────────────────────────────────────────────────────
 
@@ -496,6 +558,27 @@ class ContestAnalyzer:
             add_log(
                 "analyzer", "WARNING",
                 f"Contest {contest_id} has status '{contest.status}' — expected 'pending'. Skipping.",
+                contest_id=contest_id,
+            )
+            return None
+
+        # Free, deterministic, and before any paid call: a brief that rules out
+        # AI-generated work rules out every entry this bot can make.
+        rule = detect_ai_prohibition(contest.description) if _skip_no_ai_enabled() else ""
+        if rule:
+            contest.prompt_data = json.dumps({
+                "skip_reason": f"The brief forbids AI-generated entries: “{rule}”",
+                "ai_policy": "prohibited", "ai_policy_quote": rule,
+                "analysis_version": ANALYSIS_VERSION,
+            })
+            contest.status = "skipped"
+            db.session.commit()
+            add_log(
+                "analyzer", "WARNING",
+                f"⏭ Contest {contest_id} forbids AI-generated work (“{rule}”) — "
+                f"skipped before analysis, nothing spent. Every entry this bot "
+                f"makes is AI-generated; change “Skip Contests That Forbid AI” "
+                f"in Settings to enter such contests anyway.",
                 contest_id=contest_id,
             )
             return None
@@ -540,7 +623,9 @@ class ContestAnalyzer:
 
 # ── Structured-analysis schema, validation & fallbacks ──────────────────────────
 
-_VALID_RATIOS = {"auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5"}
+_VALID_RATIOS = {"auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5",
+                 "5:4", "21:9"}
+_AI_POLICIES = ("prohibited", "allowed", "not_mentioned")
 
 # String fields → their fallback default.
 _BRIEF_STR_DEFAULTS: dict[str, str] = {
@@ -558,6 +643,8 @@ _BRIEF_STR_DEFAULTS: dict[str, str] = {
     "image_prompt":            "",
     "deliverable":             "",
     "text_density":            "",
+    "ai_policy":               "not_mentioned",
+    "ai_policy_quote":         "",
 }
 
 # List-of-strings fields.
@@ -742,22 +829,131 @@ def _is_non_image_contest(brief: dict, contest: Contest) -> bool:
     return False
 
 
-# Substrings that mark a "no AI" style flag we deliberately ignore — this bot
-# submits AI-generated work regardless of any such wording in the brief.
+# "No AI" wording is not a risk flag: it is the brief's AI policy, read into
+# its own field (ai_policy) and acted on by `ai_prohibition()`. These markers
+# keep a model-written flag such as "no AI allowed" out of risk_flags, where it
+# would only lower win_score.
 _NO_AI_MARKERS = ("no ai", "no-ai", "no a.i", "ai not allowed", "not ai",
                   "ai-generated", "ai generated", "no artificial")
+
+# ── AI policy ──────────────────────────────────────────────────────────────────
+# Every entry this bot submits is AI-generated and declared as such (the
+# submission form's AI declaration is never "No AI"). A client who rules AI
+# out has therefore rejected every entry it could make: entering anyway pays
+# for an analysis and three images that cannot win, and files entries the
+# contest's own rules disqualify. The patterns below only fire on a
+# PROHIBITION — "a logo for our AI startup" or "no AI clichés" is a subject,
+# not a rule.
+_AI = (r"(?:a\.?i\.?|artificial[\s-]+intelligence|midjourney|chat\s?gpt|dall[\s-]?e|"
+       r"stable[\s-]+diffusion|generative\s+ai|gen[\s-]?ai)")
+_AI_WORK = (r"(?:generated|generators?|art(?:work)?|images?|designs?|tools?|entr(?:y|ies)|"
+            r"submissions?|work|content|logos?|graphics?|illustrations?|renders?|"
+            r"assisted|made|created)")
+_AI_BANNED = (r"(?:not\s+(?:be\s+)?(?:allowed|accepted|permitted|considered|tolerated)|"
+              r"prohibited|forbidden|banned|disqualified|rejected|removed|reported|"
+              r"declined|not\s+welcome|unacceptable|a\s+no[\s-]go)")
+_AI_PROHIBITION_RE = re.compile(
+    "|".join([
+        # "No AI.", "NO AI-generated designs", "no AI art please"
+        rf"\bno\s+{_AI}(?:[\s-]+{_AI_WORK})?(?=\s*(?:[.!,;:)\n]|$|please|allowed|"
+        rf"whatsoever|at\s+all|will|is|are|of\s+any|{_AI_WORK}))",
+        # "AI-generated designs will be rejected", "AI is not allowed"
+        rf"\b{_AI}(?:[\s-]+{_AI_WORK})?(?:\s+\w+){{0,3}}?\s+(?:is|are|will\s+be|"
+        rf"would\s+be|get|gets|shall\s+be)\s+(?:strictly\s+|automatically\s+|"
+        rf"immediately\s+)?{_AI_BANNED}",
+        # Imperatives — "Do not use AI", "please don't use Midjourney", "…, avoid
+        # using AI" — at the start of a sentence or after please / a comma.
+        # "We don't use AI in our app" describes a product, so a subject in
+        # front of the verb does not count here.
+        rf"(?:^|[,;:(]\s*|\bplease\s+|\bkindly\s+|\band\s+)(?:do\s+not|don'?t|never|"
+        rf"avoid|refrain\s+from)\s+(?:use|using|submit|submitting|rely\s+on)\s+"
+        rf"(?:any\s+)?{_AI}\b",
+        # Rules addressed to entrants — "designers must not use AI"
+        rf"\b(?:you|designers?|participants?|entrants?|freelancers?|submissions?|"
+        rf"entries)\s+(?:must|should|may|can|shall)\s*(?:not|n'?t)\s+(?:use|include|"
+        rf"be\s+made\s+(?:with|by))\s+(?:any\s+)?{_AI}\b",
+        # The client's own refusal — "we don't want AI art", "we can't use AI images"
+        rf"\b(?:we|i)\s+(?:don'?t|do\s+not|won'?t|will\s+not)\s+(?:want|accept|allow|"
+        rf"take|consider)\s+(?:any\s+)?{_AI}\b",
+        rf"\b(?:we|i)\s+(?:cannot|can'?t|can\s+not)\s+(?:use|accept|take)\s+"
+        rf"(?:any\s+)?{_AI}\b",
+        # "without (the use of) AI", "not made with AI", "not created by AI"
+        rf"\bwithout\s+(?:the\s+use\s+of\s+|using\s+|any\s+)?{_AI}\b",
+        rf"\bnot\s+(?:be\s+)?(?:made|created|generated|designed|produced)\s+"
+        rf"(?:with|by|using)\s+{_AI}\b",
+        # "must be human-made", "100% human created"
+        rf"\b(?:must|should|has\s+to|have\s+to)\s+be\s+(?:100\s*%\s+)?"
+        rf"human[\s-]+(?:made|created|designed|drawn)",
+        # Spanish / French / Portuguese / Arabic
+        r"\b(?:sin|no)\s+(?:usar\s+)?(?:ia|inteligencia\s+artificial)\b",
+        r"\b(?:sans|pas\s+d['’]?)\s*(?:ia|intelligence\s+artificielle)\b",
+        r"\bsem\s+(?:ia|intelig[eê]ncia\s+artificial)\b",
+        r"(?:بدون|ممنوع|لا\s+(?:يسمح|نقبل|تستخدم)\s*(?:ب)?)\s*(?:استخدام\s+)?"
+        r"(?:ال)?ذكاء\s+(?:ال)?اصطناعي",
+    ]),
+    re.IGNORECASE,
+)
+# A sentence that ALLOWS AI ("AI-assisted work is welcome", "AI is fine") is
+# not a prohibition even if it also says "no" somewhere.
+_AI_ALLOWED_RE = re.compile(
+    rf"\b{_AI}(?:[\s-]+{_AI_WORK})?\s+(?:is|are)\s+(?:welcome|fine|ok|okay|"
+    rf"allowed|accepted|permitted)\b", re.IGNORECASE)
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?\n])\s+")
+
+
+def detect_ai_prohibition(text: str) -> str:
+    """
+    The sentence of *text* that forbids AI-generated work, or "".
+
+    Deterministic and free, so it runs on the raw brief BEFORE any paid
+    analysis. Returns the client's own sentence (trimmed) so the skip can quote
+    it in the log.
+    """
+    for sentence in _SENTENCE_SPLIT.split(str(text or "")):
+        sentence = sentence.strip()
+        if not sentence or _AI_ALLOWED_RE.search(sentence):
+            continue
+        if _AI_PROHIBITION_RE.search(sentence):
+            return sentence[:300]
+    return ""
+
+
+def ai_prohibition(brief: dict, sources: str) -> str:
+    """
+    Why this contest forbids AI work, or "" when it does not.
+
+    Trusts the deterministic detector on the client's whole material, and the
+    analysis's own `ai_policy: prohibited` only when the sentence it quotes is
+    really in that material — a model that imagines a rule cannot cost a
+    contest.
+    """
+    found = detect_ai_prohibition(sources)
+    if found:
+        return found
+    if (brief.get("ai_policy") == "prohibited"
+            and brief.get("ai_policy_quote")):
+        from bot.prompt_builder import is_grounded
+        quote = brief["ai_policy_quote"]
+        if is_grounded(quote, sources):
+            return quote[:300]
+    return ""
+
+
+def _skip_no_ai_enabled() -> bool:
+    from app.models import get_setting
+    return (get_setting("contest_skip_no_ai", "true") or "true").strip().lower() == "true"
 
 
 def _canonical_risk_flags(flags: list[str]) -> list[str]:
     """Map model risk flags onto canonical strings; keep unknown flags verbatim.
 
-    Any "no AI" style flag is dropped entirely — see _NO_AI_MARKERS.
+    A "no AI" style flag is dropped — the brief's AI policy has its own field.
     """
     seen: list[str] = []
     for raw in flags:
         low = raw.lower()
         if any(marker in low for marker in _NO_AI_MARKERS):
-            continue                      # barrier removed: never flag "no AI"
+            continue                      # the AI policy is not a risk flag
         matched: Optional[str] = None
         for canon in _CANONICAL_RISK_FLAGS:
             if low == canon.lower():
@@ -861,7 +1057,8 @@ def _fallback_submission_desc(brief: dict) -> str:
     )
 
 
-def _normalize_brief(data: dict, contest: Contest, brief_truncated: bool = False) -> dict:
+def _normalize_brief(data: dict, contest: Contest, brief_truncated: bool = False,
+                     sources: Optional[str] = None) -> dict:
     """
     Turn a raw (possibly partial or malformed) model response into the strict
     prompt_data structure. Every key is guaranteed present and correctly typed,
@@ -869,6 +1066,13 @@ def _normalize_brief(data: dict, contest: Contest, brief_truncated: bool = False
 
     Also writes the legacy compatibility keys the rest of the pipeline reads:
       image_prompt, style, colors (hex list), mood, aspect_ratio, win_score.
+
+    *sources* is the client's own material (title, brief, document text, notes
+    on the reference images). When given, the analysis is GROUNDED in it:
+    required text the client never wrote is moved to `unverified_text`, a brand
+    name that appears nowhere is dropped, and every copy block is marked
+    `source: "brief" | "designer"` so a logo is never lettered with words the
+    model made up.
     """
     if not isinstance(data, dict):
         data = {}
@@ -890,9 +1094,43 @@ def _normalize_brief(data: dict, contest: Contest, brief_truncated: bool = False
     # Canonicalise risk flags
     out["risk_flags"] = _canonical_risk_flags(out["risk_flags"])
 
+    # Grounding: the client's words only (see docstring).
+    warnings: list[str] = []
+    out["unverified_text"] = []
+    if sources is not None:
+        from bot.prompt_builder import is_grounded
+        kept = []
+        for text in out["required_text"]:
+            (kept if is_grounded(text, sources) else out["unverified_text"]).append(text)
+        if out["unverified_text"]:
+            warnings.append("required text not found in the brief (kept off "
+                            "exclusive designs): "
+                            + "; ".join(f'"{t}"' for t in out["unverified_text"][:6]))
+        out["required_text"] = kept
+        if out["brand_name"] and not is_grounded(out["brand_name"], sources):
+            warnings.append(f'brand name "{out["brand_name"]}" does not occur in '
+                            f'the brief — not used as a wordmark')
+            out["brand_name_unverified"] = out["brand_name"]
+            out["brand_name"] = ""
+
     # v3 image-model plan
     out["concepts"] = out["concepts"][:5]
     out["copy_blocks"] = _copy_blocks(data.get("copy_blocks"), out["required_text"])
+    if sources is not None:
+        unverified = {t.lower() for t in out["unverified_text"]}
+        blocks = []
+        for block in out["copy_blocks"]:
+            if block["role"] == "required" and block["text"].lower() in unverified:
+                continue
+            block["source"] = "brief" if is_grounded(block["text"], sources) else "designer"
+            blocks.append(block)
+        out["copy_blocks"] = blocks
+
+    if out["ai_policy"].lower() not in _AI_POLICIES:
+        out["ai_policy"] = "not_mentioned"
+    else:
+        out["ai_policy"] = out["ai_policy"].lower()
+    out["analysis_warnings"] = warnings
     out["reference_roles"] = _reference_roles(data.get("reference_roles"))
     if out["text_density"].lower() not in _TEXT_DENSITIES:
         out["text_density"] = ""
@@ -1012,6 +1250,8 @@ def _log_brief_summary(result: dict, contest_id: int) -> None:
             f"| references={[r['role'] for r in result.get('reference_roles') or []] or '—'}",
             contest_id=contest_id,
         )
+    for warning in result.get("analysis_warnings") or []:
+        add_log("analyzer", "WARNING", f"Grounding: {warning}.", contest_id=contest_id)
     flags = result.get("risk_flags") or []
     if flags:
         add_log(

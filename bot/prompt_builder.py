@@ -42,15 +42,85 @@ from typing import Optional
 MAX_VARIATION_COUNT = 5
 
 # Canvas ratios the analysis may choose. The image transport re-checks the
-# choice against the selected model's own documented list.
-VALID_RATIOS = ("auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5")
+# choice against the selected model's own documented list (and moves it to the
+# nearest one the model has). 5:4 and 21:9 are documented by GPT Image 2.5 on
+# APIDot, PoYo and kie.ai; a 1200×300 banner used to be forced onto 16:9.
+VALID_RATIOS = ("auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5",
+                "5:4", "21:9")
 _VALID_RATIOS = set(VALID_RATIOS)
 
 _RATIO_WORDS = {
     "1:1": "square 1:1", "16:9": "wide landscape 16:9", "9:16": "tall portrait 9:16",
     "4:3": "landscape 4:3", "3:4": "portrait 3:4", "3:2": "landscape 3:2",
-    "2:3": "portrait 2:3", "4:5": "portrait 4:5",
+    "2:3": "portrait 2:3", "4:5": "portrait 4:5", "5:4": "landscape 5:4",
+    "21:9": "ultra-wide landscape 21:9",
 }
+
+# Paper sizes a brief names instead of pixels (portrait; "landscape" flips).
+_PAPER = {"a3": (297, 420), "a4": (210, 297), "a5": (148, 210), "a6": (105, 148),
+          "letter": (8.5, 11), "legal": (8.5, 14), "tabloid": (11, 17)}
+_DIM_RE = re.compile(
+    r"(\d+(?:[.,]\d+)?)\s*(?:px|pixels?|in(?:ch(?:es)?)?|\"|cm|mm|ft|')?\s*"
+    r"(?:x|×|by|\*)\s*(\d+(?:[.,]\d+)?)", re.IGNORECASE)
+
+
+def ratio_from_dimensions(text: str) -> str:
+    """
+    The canvas ratio closest to the size a brief states — "1200x628 px",
+    "3.5 x 2 in", "A4", "Letter landscape" — or "" when it states none.
+    Exact sizes beat the analysis's own pick: the model is asked to choose
+    "the listed ratio closest" and does not always do the arithmetic.
+    """
+    import math
+    blob = str(text or "")
+    width = height = None
+    match = _DIM_RE.search(blob)
+    if match:
+        width = float(match.group(1).replace(",", "."))
+        height = float(match.group(2).replace(",", "."))
+    else:
+        paper = re.search(r"\b(a[3-6]|letter|legal|tabloid)\b", blob, re.IGNORECASE)
+        if paper:
+            width, height = _PAPER[paper.group(1).lower()]
+            if re.search(r"landscape|horizontal", blob, re.IGNORECASE):
+                width, height = height, width
+    if not width or not height:
+        return ""
+    target = width / height
+    # Ordered so an exact tie (A4 sits precisely between 2:3 and 3:4) goes to
+    # the print-standard ratio.
+    order = ("1:1", "2:3", "3:2", "3:4", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9")
+    best, best_distance = "", None
+    for ratio in order:
+        w, h = (float(x) for x in ratio.split(":"))
+        distance = abs(math.log((w / h) / target))
+        if best_distance is None or distance < best_distance - 1e-9:
+            best, best_distance = ratio, distance
+    return best
+
+
+def _norm_text(text: str) -> str:
+    return re.sub(r"[^0-9a-z\u00c0-\uffff]+", " ", str(text or "").casefold()).strip()
+
+
+def is_grounded(text: str, sources: str) -> bool:
+    """
+    Does *text* actually occur in *sources* (the brief, its documents, the
+    contest title)? Case, punctuation and spacing are ignored, so "GRACE
+    HAPPENS" matches "Grace-Happens" and "+1 (555) 123-4567" matches
+    "555 123 4567". Used to keep words the client never wrote — an invented
+    tagline, a "required" line the analysis made up — off a logo.
+    """
+    needle = _norm_text(text)
+    hay = _norm_text(sources)
+    if not needle or not hay:
+        return False
+    if needle in hay or needle.replace(" ", "") in hay.replace(" ", ""):
+        return True
+    digits = re.sub(r"\D", "", str(text or ""))
+    if len(digits) >= 6 and len(digits) >= 0.6 * len(needle.replace(" ", "")):
+        return digits[-9:] in re.sub(r"\D", "", str(sources or ""))
+    return False
 
 # ── Text policies ──────────────────────────────────────────────────────────────
 TEXT_EXCLUSIVE = "exclusive"   # only the listed words (logo, t-shirt, cover)
@@ -463,8 +533,24 @@ def _resolve_template(contest_type: Optional[str],
     return name, template
 
 
+# Templates whose image IS the deliverable at its own size, so a stated size
+# sets the canvas. The others present the deliverable on a board — a business
+# card's front and back side by side, three app screens, a full-length page —
+# where the card's 3.5 × 2 in says nothing about the canvas.
+_DIRECT_CANVAS = {"logo", "banner", "social", "print", "cover", "presentation",
+                  "illustration", "generic", "document", "hero", "apparel"}
+
+
 def _resolve_aspect(brief: dict, template: dict, template_key: str = "") -> str:
-    """Prefer the brief's explicit (non-auto) ratio; else the template default."""
+    """
+    The canvas: the brief's stated dimensions first, then the analysis's
+    explicit (non-auto) ratio, else the template default. A logo is square
+    unless the brief sizes it.
+    """
+    from_size = (ratio_from_dimensions(brief.get("dimensions"))
+                 if template_key in _DIRECT_CANVAS else "")
+    if from_size:
+        return from_size
     a = (brief.get("aspect_ratio") or "").strip()
     if template_key == "logo" and not _clean(brief.get("dimensions")):
         a = ""                  # a logo is square unless the brief sizes it
@@ -545,6 +631,10 @@ def _strs(value, cap: int) -> list[str]:
     return out
 
 
+# Double-quoted spans only: single quotes are apostrophes far too often.
+_QUOTED_RE = re.compile(r'["\u201c\u201d\u201e\u00ab\u00bb]([^"\u201c\u201d\u201e\u00ab\u00bb]{1,80})'
+                        r'["\u201c\u201d\u201e\u00ab\u00bb]')
+
 # ── Reference images ───────────────────────────────────────────────────────────
 
 _REFERENCE_LINES = {
@@ -565,8 +655,12 @@ class CreativePromptBuilder:
     """Build GPT-Image prompts from `prompt_data` (+ optional Art Director craft)."""
 
     def __init__(self, prompt_data: Optional[dict],
-                 references: Optional[list[dict]] = None, title: str = ""):
+                 references: Optional[list[dict]] = None, title: str = "",
+                 sources: str = ""):
         self.brief = prompt_data or {}
+        # The client's own words (brief + title). When given, wording the Art
+        # Director supplies for a logo / cover / shirt must occur in them.
+        self.sources = " ".join(x for x in (sources, title) if x)
         self.contest_type = (self.brief.get("contest_type") or "design").strip() or "design"
         self.template_key, self.template = _resolve_template(
             self.brief.get("contest_type"), self.brief, title)
@@ -604,10 +698,14 @@ class CreativePromptBuilder:
             self.supplied["layout"] = _strs(layout, 10)
         if not self.brief.get("copy_blocks"):
             blocks = []
+            exclusive = self.text_policy() == TEXT_EXCLUSIVE
             for item in copy if isinstance(copy, list) else []:
                 if isinstance(item, dict) and _verbatim(item.get("text")):
+                    text = _verbatim(item.get("text"))[:200]
+                    if exclusive and self.sources and not is_grounded(text, self.sources):
+                        continue        # a name or tagline the client never wrote
                     blocks.append({"role": _clean(item.get("role")).lower() or "other",
-                                   "text": _verbatim(item.get("text"))[:200]})
+                                   "text": text})
             self.supplied["copy"] = blocks[:8]
         if not self.brief.get("brief_facts"):
             self.supplied["facts"] = _strs(facts, 8)
@@ -650,6 +748,12 @@ class CreativePromptBuilder:
             if not text or text.lower() in seen:
                 continue
             if (policy == TEXT_EXCLUSIVE and role not in _EXCLUSIVE_ROLES
+                    and text.lower() not in required_keys):
+                continue
+            # Wording the analysis wrote itself (no match in the brief) can
+            # fill a layout, but on a logo, cover or shirt every letter is the
+            # client's: an invented tagline is the whole entry's text.
+            if (policy == TEXT_EXCLUSIVE and b.get("source") == "designer"
                     and text.lower() not in required_keys):
                 continue
             seen.add(text.lower())
@@ -742,6 +846,22 @@ class CreativePromptBuilder:
         if self._is_logo():
             items = [i for i in items if not _LOGO_EXTRAS_RE.search(i)]
         return items
+
+    # Public views of the plan, shared with the critic and the auto-refine
+    # step so a design is judged — and corrected — against exactly what it was
+    # asked to show, never against requirements the builder deliberately
+    # dropped (a logo entry asked for "six directions on one board").
+    def about_the_image(self, items: list[str]) -> list[str]:
+        return self._about_the_image(_strs(items, 16))
+
+    def canvas_ratio(self) -> str:
+        return _resolve_aspect(self.brief, self.template, self.template_key)
+
+    def deliverable_text(self) -> str:
+        return self._deliverable() or self.template["noun"]
+
+    def layout_zones(self) -> list[str]:
+        return self._layout_plan() or list(self.supplied["layout"])
 
     def visible_must_include(self) -> list[str]:
         return self._about_the_image(_strs(self.brief.get("must_include"), 12))[:10]
@@ -843,9 +963,33 @@ class CreativePromptBuilder:
 
     # ── Render one variation ───────────────────────────────────────────────────
 
+    def _scrub_art(self, art: dict) -> dict:
+        """
+        Remove quoted wording from the Art Director's segments that is not in
+        the text plan — on a logo, cover or shirt (or an image with no text) a
+        composition line like `a ribbon reading "Since 1998"` is an instruction
+        to letter it. Quoted parts of the planned text ("the letter 'G'" of the
+        name, the wordmark itself) stay; layouts are left alone, since their
+        policy already allows a few realistic labels.
+        """
+        if not art or self.text_policy() == TEXT_LAYOUT:
+            return art
+        allowed = [_norm_text(b["text"]) for b in self.text_blocks()]
+
+        def keep(match: re.Match) -> str:
+            inner = _norm_text(match.group(1))
+            return match.group(0) if inner and any(inner in a for a in allowed) else ""
+
+        out = {}
+        for key, value in art.items():
+            if isinstance(value, str):
+                value = re.sub(r"\s{2,}", " ", _QUOTED_RE.sub(keep, value)).strip()
+            out[key] = value
+        return out
+
     def render(self, var: dict, index: int = 0) -> str:
         t = self.template
-        art = var.get("art") or {}
+        art = self._scrub_art(var.get("art") or {})
         brand = _clean(self.brief.get("brand_name"))
         noun = t["noun"]
 

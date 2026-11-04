@@ -173,7 +173,8 @@ def test_connection():
 
     message = status["message"]
     if not endpoint.get("ok") and status["state"] in ("connected", "low_credits"):
-        message = f"Chat/balance OK, image endpoint failed: {endpoint.get('message')}"
+        message = (f"Balance OK, but the image endpoint failed: "
+                   f"{endpoint.get('message')}")
     if requeued["total"]:
         message += _requeue_note(requeued)
 
@@ -212,13 +213,15 @@ def _requeue_note(requeued: dict) -> str:
 @bp.route("/api/ai/test-model", methods=["POST"])
 def test_model():
     """
-    Test Model — one minimal real generation against the selected chat model.
+    Test Model — one minimal real generation against the selected chat model,
+    or, for a provider that only serves images (PoYo, KovAPI), one real 1K
+    image job at the cheapest documented settings.
 
-    This DOES spend a few credits (a single-token reply), so it is a separate,
-    explicit action. It is refused up-front when the free balance check already
-    proves it would fail. A capped KEY is the exception: nothing free can see
-    that limit lift, so this is the check that clears it — and releases the
-    contests parked behind it.
+    This DOES spend a few credits (a single-token reply / one low-tier image),
+    so it is a separate, explicit action. It is refused up-front when the free
+    balance check already proves it would fail. A capped KEY is the exception:
+    nothing free can see that limit lift, so this is the check that clears it —
+    and releases the contests parked behind it.
     """
     data = request.get_json(silent=True) or {}
     provider = (data.get("provider") or "").strip()
@@ -246,8 +249,11 @@ def test_model():
             "skipped": True,
         })
 
-    from bot.llm import probe_model
-    result = probe_model(provider, model_key)
+    if reg.serves(provider, reg.CATEGORY_CHAT):
+        from bot.llm import probe_model
+        result = probe_model(provider, model_key)
+    else:
+        result = image_providers.probe_generation(provider, model_key)
     if result["ok"]:
         from tasks.celery_tasks import resume_blocked_contests
         requeued = resume_blocked_contests(g.space_id)

@@ -221,6 +221,7 @@ def record_failure(provider: str, error: err.ProviderError,
         # A live failure means the cached balance is stale; a cached block does
         # not, which is why this sits after the early return above.
         invalidate_balance(provider, space_id)
+        forget_verified(provider, space_id)
 
 
 # ── Balance ────────────────────────────────────────────────────────────────────
@@ -292,21 +293,7 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
                 "http_status": problem.http_status, "latency_ms": latency_ms,
                 "cached": False, "checked_at": time.time()}
 
-    # Two shapes in the wild, both verified live 2026-09-18:
-    #   APIDot  {"code":200,"data":{"email":…,"credits_amount":-92.23}}
-    #   kie.ai  {"code":200,"msg":"success","data":652.14}   ← a bare number
-    raw_data = body.get("data")
-    if isinstance(raw_data, (int, float)) and not isinstance(raw_data, bool):
-        credits, data = raw_data, {}
-    else:
-        data = raw_data if isinstance(raw_data, dict) else body
-        credits = data.get("credits_amount")
-        if credits is None:
-            credits = data.get("credits", data.get("balance"))
-    try:
-        credits = float(credits) if credits is not None else None
-    except (TypeError, ValueError):
-        credits = None
+    credits, data = extract_credits(meta, body)
 
     entry = {
         "supported": True,
@@ -333,6 +320,67 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
             message=f"Balance is {credits:g} credits.",
             retryable=False, scope=err.ACCOUNT), space_id)
     return entry
+
+
+def extract_credits(meta: dict, body) -> tuple[Optional[float], dict]:
+    """
+    (credits, data) from a balance response, whichever documented shape it has:
+
+      APIDot / PoYo  {"code":200,"data":{"email":…,"credits_amount":-92.23}}
+      kie.ai         {"code":200,"msg":"success","data":652.14}  ← a bare number
+      KovAPI         {"object":…,"balance":{"usd":1.2,"credits":240},…}
+                     (declared as `balance_path: "balance.credits"`)
+
+    The first two were verified live 2026-09-18; KovAPI's is from its API manual.
+    """
+    body = body if isinstance(body, dict) else {}
+    path = meta.get("balance_path")
+    if path:
+        node = body
+        for part in path.split("."):
+            node = node.get(part) if isinstance(node, dict) else None
+        credits, data = node, body
+    else:
+        raw_data = body.get("data")
+        if isinstance(raw_data, (int, float)) and not isinstance(raw_data, bool):
+            credits, data = raw_data, {}
+        else:
+            data = raw_data if isinstance(raw_data, dict) else body
+            credits = data.get("credits_amount")
+            if credits is None:
+                credits = data.get("credits", data.get("balance"))
+    if isinstance(credits, bool):
+        credits = None
+    try:
+        credits = float(credits) if credits is not None else None
+    except (TypeError, ValueError):
+        credits = None
+    return credits, (data if isinstance(data, dict) else {})
+
+
+# ── "This key really generated recently" (image-only providers) ───────────────
+# A balance check cannot see a capped KEY. For providers that also serve chat,
+# the pre-batch canary pings chat on the same key; an image-only provider has
+# nothing that cheap, so its canary is one real image job — and it is skipped
+# while a recent real submission already proved the key works.
+
+VERIFIED_TTL = 6 * 3600
+
+
+def _verified_key(space_id, provider) -> str:
+    return f"ai:verified:{_space_id(space_id)}:{provider}"
+
+
+def note_verified(provider: str, space_id: Optional[int] = None) -> None:
+    _set(_verified_key(space_id, provider), {"at": time.time()}, VERIFIED_TTL)
+
+
+def recently_verified(provider: str, space_id: Optional[int] = None) -> bool:
+    return bool(_get(_verified_key(space_id, provider)))
+
+
+def forget_verified(provider: str, space_id: Optional[int] = None) -> None:
+    _delete(_verified_key(space_id, provider))
 
 
 def has_credits(provider: str, space_id: Optional[int] = None) -> Optional[bool]:

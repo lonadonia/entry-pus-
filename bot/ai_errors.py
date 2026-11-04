@@ -120,6 +120,16 @@ class ProviderError:
         return (self.details or {}).get("billing_kind") == KEY_LIMIT
 
     @property
+    def is_permission_refusal(self) -> bool:
+        """
+        HTTP 403 for a key that is valid but not allowed this model or this
+        caller's IP (KovAPI `permission_denied`): still account-scoped, but the
+        fix is the key's allowlist, not a new key.
+        """
+        code = f"{self.provider_code or ''} {self.provider_type or ''}".lower()
+        return self.http_status == 403 and "permission" in code
+
+    @property
     def allows_model_failover(self) -> bool:
         """May the caller try a sibling model of the SAME provider?"""
         return self.category in MODEL_FAILOVER_CATEGORIES
@@ -171,6 +181,10 @@ class ProviderError:
         if self.category == BILLING:
             return (f"{label} account has insufficient credits — add credits to "
                     f"resume AI requests.")
+        if self.category == AUTHENTICATION and self.is_permission_refusal:
+            return (f"{label} refused this key for the request (model allowlist "
+                    f"or IP allowlist): {self.message} — allow this model and "
+                    f"this server's IP for the key in the {label} console.")
         if self.category == AUTHENTICATION:
             return (f"{label} authentication failed — check the API key on the "
                     f"AI Agents page.")
@@ -189,7 +203,11 @@ class ProviderError:
         return f"{label} request failed: {self.message}"
 
     def provider_label(self) -> str:
-        return {"apidot": "APIDot", "kie": "Kie.ai"}.get(self.provider, self.provider)
+        try:
+            from bot.ai_registry import provider_label
+            return provider_label(self.provider)
+        except Exception:                      # never fail while reporting a failure
+            return self.provider
 
 
 class ProviderCallError(Exception):
@@ -327,7 +345,11 @@ _KEY_LIMIT_MESSAGE = re.compile(
     r"(total\s+)?credit\s+limit\s+(exceeded|reached)"
     r"|spending\s+limit\s+(exceeded|reached)"
     r"|usage\s+limit\s+(exceeded|reached)"
-    r"|key\s+(credit\s+)?(limit|quota)\s+(exceeded|reached)",
+    r"|key\s+(credit\s+)?(limit|quota)\s+(exceeded|reached)"
+    # KovAPI's per-key controls: "daily budget" and "total quota" (its messages
+    # "may be in Chinese, English, or both": 每日预算 / 总额度 / 额度上限).
+    r"|daily\s+budget|budget\s+(exceeded|reached|exhausted)"
+    r"|total\s+quota|quota\s+cap|每日预算|总额度|额度上限|额度已用",
     re.I,
 )
 _USAGE_RATIO = re.compile(r"(\d+(?:\.\d+)?)\s*/\s*(\d+(?:\.\d+)?)")
@@ -361,7 +383,12 @@ _MODEL_MESSAGE = re.compile(
     r"|no\s+such\s+model|does\s+not\s+support",
     re.I,
 )
-_MODEL_TYPE = re.compile(r"model_not_found|unsupported_model|model_unavailable", re.I)
+# `model_disabled` / `model_coming_soon` are KovAPI's 400s for a listed model
+# that cannot be called yet. `model_maintenance` (503) is deliberately absent:
+# maintenance is temporary, so it stays a retryable UPSTREAM failure.
+_MODEL_TYPE = re.compile(
+    r"model_not_found|unsupported_model|model_unavailable|model_disabled|"
+    r"model_coming_soon", re.I)
 
 _INVALID_TYPE = re.compile(
     r"validation|invalid_request|bad_request|invalid_parameter", re.I)
@@ -439,6 +466,10 @@ def classify_response(
     blob = signals["all_messages"]
     types = signals["types"]
     retry_after = parse_retry_after(headers)
+    if retry_after is None and isinstance(body, dict):
+        # KovAPI: "Some errors include extra top-level fields, such as
+        # attempts or retry_after."
+        retry_after = parse_retry_after({"Retry-After": body.get("retry_after")})
     request_id = request_id_from(headers)
 
     has_error_body = bool(
