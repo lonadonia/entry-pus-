@@ -464,6 +464,11 @@ class ProjectBidder(BrowserSession):
         self.human_delay(0.8, 1.6)
         self.last_bid_clicked = True
         self.human_click(button)
+        # Committed before verification on purpose: if verification fails or raises
+        # (and the session rolls back), the bid may still be live on Freelancer, and
+        # this marker is what keeps the automatic cleanup away from the project.
+        proposal.bid_clicked_at = datetime.now(timezone.utc)
+        db.session.commit()
         add_log("projects", "INFO", "Bid submitted — verifying…", project_id=project.id)
 
         ok, evidence = self._verify_bid_submitted(project)

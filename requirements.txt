@@ -35,6 +35,7 @@ requests==2.34.2
 beautifulsoup4==4.14.3
 lxml==6.1.1                    # 6.1.1 patches CVE-2025-7424 and CVE-2025-11731
 python-dotenv==1.2.2
+tzdata==2026.6                 # IANA tz database, version-locked: daily discovery runs on local time
 pydantic==2.13.4               # v2 API — use model_validate / model_dump, not .dict()
 psycopg2-binary==2.9.12        # pre-compiled PostgreSQL adapter; no libpq build needed
 python-magic==0.4.27           # requires libmagic system lib (apt: libmagic1 / brew: libmagic)

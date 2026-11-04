@@ -44,6 +44,12 @@ from app.models import (
     save_setting,
 )
 from bot.freelancer_profile import load_profile, profile_fact_text, profile_status
+from bot.project_cleanup import (
+    CLEANABLE_STATUSES, cleanup_settings, expires_at, protection_reason,
+)
+from bot.project_discovery import (
+    create_manual_run, date_status_counts, day_stats, scheduler_status,
+)
 from bot.proposal_engine import ProposalRules, validate_proposal
 
 bp = Blueprint("projects", __name__)
@@ -114,6 +120,66 @@ def project_stats():
     })
 
 
+# ── Daily discovery + today's numbers ─────────────────────────────────────────
+
+def _heartbeats():
+    from tasks.celery_tasks import BEAT_HEARTBEAT_KEY, LAST_TICK_KEY, read_stamp
+    return read_stamp(BEAT_HEARTBEAT_KEY), read_stamp(LAST_TICK_KEY)
+
+
+def _discovery_status() -> dict:
+    beat, tick = _heartbeats()
+    status = scheduler_status(g.space_id, beat_heartbeat=beat)
+    status["scheduler"]["last_tick"] = tick.isoformat() if tick else None
+    return status
+
+
+@bp.route("/api/projects/discovery", methods=["GET"])
+def discovery_status():
+    """Schedule, scheduler health, the last run and the last successful run."""
+    return jsonify(_discovery_status())
+
+
+@bp.route("/api/projects/discovery/run", methods=["POST"])
+def discovery_run_now():
+    """Run today's discovery now: same window, page limit and filters as the schedule."""
+    if not (get_setting("project_search_url", "") or "").strip():
+        return jsonify({"error": "Project search URL is not configured — "
+                                 "set it in Settings → Projects / Proposals."}), 422
+    if get_setting("task_project_fetch_status", "idle") == "running":
+        return jsonify({"error": "A project fetch is already running."}), 409
+    run = create_manual_run(g.space_id)
+    save_setting("task_project_fetch_status", "running")   # the same double-click guard
+    from tasks.celery_tasks import daily_project_discovery
+    daily_project_discovery.delay(g.space_id, run.id)
+    add_log("projects", "INFO", f"Daily discovery started by hand for {run.target_date}.")
+    return jsonify({"run_id": run.id, "message": f"Discovery for {run.target_date} started."})
+
+
+@bp.route("/api/projects/today", methods=["GET"])
+def projects_today():
+    """The dashboard's daily cards — every number comes from the database."""
+    from tasks.celery_tasks import _queued_project_ids
+    stats = day_stats(g.space_id, queued_for_analysis=len(_queued_project_ids(g.space_id)))
+    status = _discovery_status()
+    stats["discovery"] = {key: status[key] for key in (
+        "enabled", "time", "timezone", "tz_abbrev", "pages", "projects_per_page",
+        "next_run", "last_run", "last_success", "scheduler", "missed", "config_errors",
+        "now_local", "utc_offset")}
+    stats["fetch_running"] = get_setting("task_project_fetch_status", "idle") == "running"
+    last = status.get("last_run")
+    if last and last.get("target_date"):
+        from datetime import date as _date
+        from bot.discovery_schedule import resolve_zone
+        try:
+            zone = resolve_zone(last.get("timezone") or status["timezone"])
+            stats["last_run_results"] = date_status_counts(
+                g.space_id, _date.fromisoformat(last["target_date"]), zone)
+        except ValueError:
+            stats["last_run_results"] = None
+    return jsonify(stats)
+
+
 # ── Listing ────────────────────────────────────────────────────────────────────
 
 def _proposal_summary(p: Proposal | None) -> dict | None:
@@ -149,6 +215,32 @@ def _project_concerns(p: Project) -> list:
         return []
 
 
+def _utc_iso(moment) -> str | None:
+    """Stored times are naive UTC; one still in memory may be aware. Same output either way."""
+    if moment is None:
+        return None
+    if moment.tzinfo is None:
+        return moment.isoformat() + "+00:00"
+    from datetime import timezone
+    return moment.astimezone(timezone.utc).isoformat()
+
+
+def _cleanup_removal(p: Project) -> dict | None:
+    """When the automatic cleanup will remove a skipped/failed row (None = it won't)."""
+    if p.status not in CLEANABLE_STATUSES:
+        return None
+    if "cleanup" not in g:
+        g.cleanup = cleanup_settings(g.space_id)
+    enabled, hours = g.cleanup
+    if not enabled:
+        return None
+    reason = protection_reason(p)
+    if reason:
+        return {"protected": reason}
+    at = expires_at(p, hours)
+    return {"at": at.isoformat()} if at else None
+
+
 def _project_summary(p: Project) -> dict:
     meta = _project_meta(p)
     return {
@@ -172,6 +264,8 @@ def _project_summary(p: Project) -> dict:
         "client_reviews":    p.client_reviews,
         "payment_verified":  p.client_payment_verified,
         "status":            p.status,
+        "status_changed_at": _utc_iso(p.status_changed_at),
+        "removal":           _cleanup_removal(p),
         "skip_reason":       p.skip_reason,
         "concerns":          _project_concerns(p),
         "opportunity_score": p.opportunity_score,

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from flask import g
 from sqlalchemy import Enum as SAEnum
+from sqlalchemy import event as sa_event
 
 from app import db
 
@@ -311,6 +312,11 @@ class Project(db.Model):
     skip_reason = db.Column(db.String(300), nullable=True)
     analysis_json = db.Column(db.Text, nullable=True)                   # full structured analysis
     opportunity_score = db.Column(db.Float, nullable=True)              # 0–100
+    # When the row entered its CURRENT status. Stamped by the attribute listener
+    # below on every real change, wherever in the code it happens, so the 24-hour
+    # cleanup of skipped/failed rows counts from the transition, not from when the
+    # project was posted or last touched (updated_at moves on every bid-count refresh).
+    status_changed_at = db.Column(db.DateTime, nullable=True, index=True, default=_utcnow)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
 
@@ -396,6 +402,10 @@ class Proposal(db.Model):
     submitted_text = db.Column(db.Text, nullable=True)
     submitted_at = db.Column(db.DateTime, nullable=True)
     submission_evidence = db.Column(db.Text, nullable=True)    # confirmation text / bid id / URL
+    # Set the moment the bidder clicks Place Bid, before verification. A bid whose
+    # verification then fails may still exist on Freelancer, so a project carrying
+    # this marker is never removed by the automatic cleanup.
+    bid_clicked_at = db.Column(db.DateTime, nullable=True)
     error = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=_utcnow)
     updated_at = db.Column(db.DateTime, default=_utcnow, onupdate=_utcnow)
@@ -403,6 +413,92 @@ class Proposal(db.Model):
     def __repr__(self):
         return (f"<Proposal id={self.id} project_id={self.project_id} "
                 f"rev={self.revision} bid={self.bid_amount}>")
+
+
+# ── Status-transition timestamp ───────────────────────────────────────────────
+# One listener instead of a stamp next to each of the ~40 places that assign a
+# status. active_history=True loads the old value first: without it, a re-filed
+# row (expired after a commit) would look "changed" every run and its 24-hour
+# clock would restart forever.
+
+@sa_event.listens_for(Project.status, "set", active_history=True)
+def _stamp_status_change(target, value, oldvalue, initiator):
+    if value != oldvalue:
+        target.status_changed_at = _utcnow()
+
+
+# ── Daily project discovery ───────────────────────────────────────────────────
+
+class DiscoveryRun(db.Model):
+    """
+    One execution of the daily project discovery (scheduled, caught up after a
+    restart, or started by hand). `slot_key` is the local calendar day a scheduled
+    run belongs to; the unique (space_id, slot_key) pair is what guarantees a day is
+    never run twice, even with two schedulers racing. Manual runs leave it NULL.
+    Times are naive UTC, like every other column in this schema.
+    """
+    __tablename__ = "project_discovery_runs"
+    __table_args__ = (
+        db.UniqueConstraint("space_id", "slot_key", name="uq_discovery_space_slot"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    space_id = db.Column(
+        db.Integer, db.ForeignKey("spaces.id", ondelete="CASCADE"),
+        nullable=True, index=True, default=_current_space_id,
+    )
+    slot_key = db.Column(db.String(40), nullable=True)
+    trigger = db.Column(db.String(20), nullable=False, default="scheduled")  # scheduled | catch_up | manual
+    status = db.Column(db.String(20), nullable=False, default="queued", index=True)
+    # queued | running | completed | failed | interrupted | skipped
+    attempt = db.Column(db.Integer, nullable=False, default=1)
+    target_date = db.Column(db.String(10), nullable=True)          # local YYYY-MM-DD
+    timezone = db.Column(db.String(64), nullable=True)
+    scheduled_for = db.Column(db.DateTime, nullable=True)
+    window_start = db.Column(db.DateTime, nullable=True)
+    window_end = db.Column(db.DateTime, nullable=True)
+    page_limit = db.Column(db.Integer, nullable=True)
+    pages_scanned = db.Column(db.Integer, nullable=True)
+    coverage = db.Column(db.String(20), nullable=True)             # complete | partial | unknown
+    stats_json = db.Column(db.Text, nullable=True)
+    error = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=_utcnow)
+    started_at = db.Column(db.DateTime, nullable=True)
+    finished_at = db.Column(db.DateTime, nullable=True)
+
+    def __repr__(self):
+        return (f"<DiscoveryRun id={self.id} space={self.space_id} slot={self.slot_key} "
+                f"status={self.status}>")
+
+
+class ProjectArchive(db.Model):
+    """
+    What is left of a project the automatic cleanup removed: enough to audit the
+    deletion and — through the unique (space_id, external_id) — to stop the next
+    fetch from re-creating the same project and paying to analyse it again.
+    """
+    __tablename__ = "project_archive"
+    __table_args__ = (
+        db.UniqueConstraint("space_id", "external_id", name="uq_archive_space_external"),
+    )
+
+    id = db.Column(db.Integer, primary_key=True)
+    space_id = db.Column(
+        db.Integer, db.ForeignKey("spaces.id", ondelete="CASCADE"),
+        nullable=True, index=True, default=_current_space_id,
+    )
+    external_id = db.Column(db.String(30), nullable=False)
+    title = db.Column(db.String(500), nullable=True)
+    url = db.Column(db.String(500), nullable=True)
+    status = db.Column(db.String(20), nullable=True)
+    reason = db.Column(db.String(300), nullable=True)
+    posted_at = db.Column(db.DateTime, nullable=True)
+    status_changed_at = db.Column(db.DateTime, nullable=True)
+    had_proposal = db.Column(db.Boolean, default=False, nullable=False)
+    deleted_at = db.Column(db.DateTime, default=_utcnow, index=True)
+
+    def __repr__(self):
+        return f"<ProjectArchive {self.external_id} {self.status}>"
 
 
 class Setting(db.Model):
@@ -734,6 +830,37 @@ _DEFAULTS: list[tuple[str, str, str, bool]] = [
     ("project_max_revisions", "2",
      "Maximum automatic proposal regenerations when quality review fails",
      False),
+    # ── Daily project discovery (run by Celery beat — see bot/project_discovery.py)
+    ("project_discovery_enabled", "true",
+     "When true, project discovery runs automatically once a day at the configured "
+     "local time, even with the dashboard closed. Manual fetches keep working.",
+     False),
+    ("project_discovery_time", "23:00",
+     "Local time (HH:MM, 24-hour) of the daily project discovery run",
+     False),
+    ("project_discovery_timezone", "Africa/Casablanca",
+     "IANA timezone for the discovery time and for what counts as 'today' "
+     "(daylight saving and Ramadan offsets are handled by the tz database)",
+     False),
+    ("project_discovery_pages", "10",
+     "Search result pages the daily discovery reads, newest first "
+     "(20 projects per page, 1-50)",
+     False),
+    # ── Automatic cleanup of skipped / failed projects ──────────────────────────
+    ("project_cleanup_enabled", "true",
+     "When true, Skipped and Failed projects are deleted automatically once they have "
+     "been in that status for the configured hours. A project with a bid is never deleted.",
+     False),
+    ("project_cleanup_after_hours", "24",
+     "Hours a project stays Skipped or Failed before the automatic cleanup removes it (1-720)",
+     False),
+    ("project_last_cleanup_json", "",
+     "Summary of the most recent automatic project cleanup",
+     False),
+    ("project_discovery_since", "",
+     "When the daily schedule was last enabled or changed (UTC) — earlier slots are "
+     "never caught up. Written by the app.",
+     False),
     # Optional additions to the real Freelancer.com profile, which is read
     # automatically (bot/freelancer_profile.py) and is the primary source of what a
     # proposal may claim. The old skills / portfolio / excluded-work / tone settings
@@ -968,6 +1095,53 @@ def migrate_project_tables() -> None:
                 ))
     except Exception:
         pass
+
+
+def migrate_discovery_and_cleanup() -> None:
+    """
+    Idempotently upgrade an existing database for daily discovery and the
+    24-hour cleanup. The new tables come from db.create_all(); this adds the two
+    new columns to existing tables. Same conventions as the migrations above:
+    every step guarded, best-effort, never breaks startup.
+
+    Legacy rows get status_changed_at = updated_at. That is the safe direction:
+    updated_at is the LAST change to the row, so it is never earlier than the
+    moment the row entered its current status — a backfilled row can only expire
+    late, never early.
+    """
+    from sqlalchemy import inspect, text
+
+    insp = inspect(db.engine)
+    if insp.has_table("projects"):
+        cols = {c["name"] for c in insp.get_columns("projects")}
+        if "status_changed_at" not in cols:
+            try:
+                db.session.execute(text("ALTER TABLE projects ADD COLUMN status_changed_at TIMESTAMP"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+        try:
+            db.session.execute(text(
+                "UPDATE projects SET status_changed_at = COALESCE(updated_at, created_at) "
+                "WHERE status_changed_at IS NULL"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+        try:
+            db.session.execute(text(
+                "CREATE INDEX IF NOT EXISTS ix_projects_status_changed_at "
+                "ON projects (status_changed_at)"))
+            db.session.commit()
+        except Exception:
+            db.session.rollback()
+    if insp.has_table("proposals"):
+        cols = {c["name"] for c in insp.get_columns("proposals")}
+        if "bid_clicked_at" not in cols:
+            try:
+                db.session.execute(text("ALTER TABLE proposals ADD COLUMN bid_clicked_at TIMESTAMP"))
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
 
 
 def migrate_contest_status_blocked() -> None:

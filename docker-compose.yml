@@ -79,6 +79,28 @@ services:
       - redis
       - postgres
 
+  # ── Celery Beat (scheduler) ──────────────────────────────────────────────────
+  # Sends two housekeeping ticks to the worker: the daily-discovery check (every
+  # minute) and the skipped/failed cleanup (every 15 min). Which local time and
+  # timezone the discovery runs at is per-Space data read by the tick, so the
+  # Settings page changes it without a restart. Run exactly ONE beat. It needs no
+  # database; the schedule file only holds beat's own last-tick bookkeeping, so
+  # /tmp is fine — every decision that matters is stored in Postgres.
+  celery_beat:
+    build: .
+    restart: unless-stopped
+    init: true
+    command: celery -A tasks.celery_tasks beat --loglevel=info --schedule /tmp/celerybeat-schedule
+    env_file: .env
+    environment:
+      DATABASE_URL:          postgresql://${POSTGRES_USER:-contestbot}:${POSTGRES_PASSWORD:-contestbot}@postgres:5432/${POSTGRES_DB:-contestbot}
+      REDIS_URL:             redis://redis:6379/0
+      CELERY_BROKER_URL:     redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    depends_on:
+      - redis
+      - celery_worker
+
   # ── Nginx ────────────────────────────────────────────────────────────────────
   nginx:
     image: nginx:alpine

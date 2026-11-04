@@ -48,18 +48,80 @@ def _make_celery() -> Celery:
         task_track_started       = True,
         task_acks_late           = True,
         worker_prefetch_multiplier = 1,
-        # Beat schedule — fetch new contests for every Space every 6 hours
+        # Beat (the `celery_beat` service) only sends two housekeeping ticks. The
+        # schedule itself — which local time, which timezone, enabled or not — is
+        # per-Space data read by the tick (bot/project_discovery.py), so changing it
+        # on the Settings page needs no restart, and DST is the tz database's job.
+        #
+        # The old 6-hourly `fetch_all_spaces` contest fetch is deliberately NOT here:
+        # beat was never deployed, so it never ran, and starting beat with it would
+        # have begun chaining contest analysis → generation → auto-submission (on by
+        # default) with nobody asking. The task still exists for manual use.
         beat_schedule = {
-            "fetch-every-6h": {
-                "task":     "tasks.fetch_all_spaces",
-                "schedule": timedelta(hours=6),
+            "project-discovery-tick": {
+                "task":     "tasks.project_discovery_tick",
+                "schedule": timedelta(seconds=60),
+                # A tick that waited behind a long task is stale: drop it, the
+                # next one decides from the real clock anyway.
+                "options":  {"expires": 55},
+            },
+            "project-cleanup": {
+                "task":     "tasks.cleanup_expired_projects_all",
+                "schedule": timedelta(minutes=15),
+                "options":  {"expires": 600},
             },
         },
+        beat_scheduler = "tasks.celery_tasks:HeartbeatScheduler",
     )
     return app
 
 
 celery = _make_celery()
+
+
+# ── Scheduler heartbeat ────────────────────────────────────────────────────────
+# "Is the daily discovery actually scheduled?" can't be answered from the worker:
+# a busy worker runs ticks late, which says nothing about beat. So beat itself
+# stamps Redis every 30 s and the Settings page reads the stamp's age; the worker
+# separately records the last tick it processed.
+
+BEAT_HEARTBEAT_KEY = "scheduler:beat_heartbeat"
+LAST_TICK_KEY = "scheduler:last_tick"
+
+
+def _stamp(key: str, ttl: int = 3600) -> None:
+    try:
+        from datetime import datetime, timezone
+        _broker().set(key, datetime.now(timezone.utc).isoformat(), ex=ttl)
+    except Exception as exc:              # a heartbeat must never stop the scheduler
+        logger.debug("Could not write %s: %s", key, exc)
+
+
+def read_stamp(key: str):
+    """The datetime stored at *key*, or None (missing, or Redis unreachable)."""
+    try:
+        from datetime import datetime
+        raw = _broker().get(key)
+        return datetime.fromisoformat(raw.decode()) if raw else None
+    except Exception:
+        return None
+
+
+from celery.beat import PersistentScheduler  # noqa: E402 — needs `celery` configured
+
+
+class HeartbeatScheduler(PersistentScheduler):
+    """Celery's default beat scheduler plus a heartbeat (see above)."""
+
+    heartbeat_every = 30.0
+    _last_heartbeat = float("-inf")
+
+    def tick(self, *args, **kwargs):
+        import time as _time
+        if _time.monotonic() - self._last_heartbeat >= self.heartbeat_every:
+            self._last_heartbeat = _time.monotonic()
+            _stamp(BEAT_HEARTBEAT_KEY)
+        return super().tick(*args, **kwargs)
 
 
 # ── Flask app context ──────────────────────────────────────────────────────────
@@ -1145,12 +1207,71 @@ def _browser_lock(space_id, timeout=3600):
                 pass
 
 
+# One project fetch per Space at a time — manual or daily discovery. The worker runs
+# with --concurrency=1, so two never truly overlap today; the lock is what keeps it
+# that way if the worker is ever scaled, and it lets the daily run wait for a manual
+# fetch instead of interleaving with it. Stop and worker_ready clear a stale one.
+FETCH_LOCK_TTL = 1800
+
+
+def _fetch_lock_key(space_id) -> str:
+    return f"project_fetch_lock:{space_id}"
+
+
+def _acquire_fetch_lock(space_id, owner: str, ttl: int = FETCH_LOCK_TTL) -> bool:
+    try:
+        return bool(_broker().set(_fetch_lock_key(space_id), owner, nx=True, ex=ttl))
+    except Exception:
+        return True          # Redis down: the single worker still serialises tasks
+
+
+def _release_fetch_lock(space_id, owner: str) -> None:
+    try:
+        r = _broker()
+        key = _fetch_lock_key(space_id)
+        if (r.get(key) or b"").decode() == owner:
+            r.delete(key)
+    except Exception:
+        pass
+
+
+def _queued_args(task_name: str) -> list:
+    """Positional args of every *task_name* message waiting in the broker list."""
+    out = []
+    try:
+        for item in _broker().lrange("celery", 0, -1):
+            try:
+                msg = json.loads(item)
+                if (msg.get("headers") or {}).get("task") == task_name:
+                    out.append(json.loads(base64.b64decode(msg["body"]))[0])
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
+
+
 @celery.task(bind=True, name="tasks.fetch_projects", max_retries=1)
 def fetch_projects(self, space_id):
     """
     Extract normal Freelancer projects for one Space through Freelancer's API
     (no browser, so no browser lock), then queue analysis when enabled.
     """
+    owner = f"fetch:{self.request.id or os.getpid()}"
+    if not _acquire_fetch_lock(space_id, owner):
+        # The daily discovery is reading the search right now and holds the flag;
+        # leave the flag alone — it resets it when it finishes.
+        try:
+            with _app_ctx(space_id):
+                from app.models import add_log
+                add_log("projects", "WARNING",
+                        "A project fetch is already running (daily discovery) — this "
+                        "fetch was not started; its results cover the same search.")
+        except Exception:
+            pass
+        _emit("task_complete", {"type": "project_fetch", "status": "skipped",
+                                "note": "a fetch is already running"}, space_id)
+        return {"skipped": "fetch already running"}
     _task_running("project_fetch", space_id)
     try:
         with _app_ctx(space_id):
@@ -1209,6 +1330,7 @@ def fetch_projects(self, space_id):
                                 "error": str(exc)}, space_id)
         return {"error": str(exc)}
     finally:
+        _release_fetch_lock(space_id, owner)
         _task_idle("project_fetch", space_id)
 
 
@@ -1309,6 +1431,11 @@ def analyze_project(self, space_id, project_id: int):
                     project = db.session.get(Project, project_id)
                     if project is not None and project.status == "analyzing":
                         project.status = "failed"
+                        # Shown in the Projects table and kept in the cleanup archive;
+                        # before this, a failed analysis said why only in the log.
+                        error = _provider_error(exc)
+                        why = error.operator_message() if error is not None else str(exc)
+                        project.skip_reason = f"Analysis failed: {why}"[:290]
                         db.session.commit()
                     add_log("projects", "ERROR",
                             f"Project {project_id} analysis failed: {exc}",
@@ -1563,6 +1690,136 @@ def fetch_all_spaces():
     return {"dispatched": len(space_ids)}
 
 
+# ── Daily project discovery + automatic cleanup (beat-driven) ─────────────────
+# See bot/project_discovery.py for the scheduling rules and bot/project_cleanup.py
+# for what may be deleted. These tasks only add the Celery plumbing: dispatching,
+# the fetch lock, the task flag, retries and events.
+
+@celery.task(name="tasks.project_discovery_tick")
+def project_discovery_tick():
+    """Every minute (beat): create/re-arm the runs that are due and dispatch them."""
+    from datetime import datetime, timezone
+    _stamp(LAST_TICK_KEY)
+    with _app_ctx():
+        from app import db
+        from app.models import DiscoveryRun
+        from bot.project_discovery import due_runs
+        queued = _queued_task_ids("tasks.daily_project_discovery")
+        dispatched = []
+        for run_id in due_runs(datetime.now(timezone.utc), queued):
+            run = db.session.get(DiscoveryRun, run_id)
+            if run is not None:
+                daily_project_discovery.delay(run.space_id, run.id)
+                dispatched.append(run.id)
+    return {"dispatched": dispatched}
+
+
+@celery.task(bind=True, name="tasks.daily_project_discovery", max_retries=30)
+def daily_project_discovery(self, space_id, run_id):
+    """
+    One discovery run: today's newly published projects, then analysis for every
+    eligible one. Waits (bounded) for a manual fetch that holds the fetch lock rather
+    than interleaving with it; a run that was already claimed is never run twice.
+    """
+    owner = f"discovery:{run_id}:{self.request.id or os.getpid()}"
+    if not _acquire_fetch_lock(space_id, owner):
+        try:
+            raise self.retry(countdown=120)
+        except Retry:
+            raise
+        except Exception:
+            with _app_ctx(space_id):
+                from app import db
+                from app.models import DiscoveryRun
+                from bot.project_discovery import _finish
+                run = db.session.get(DiscoveryRun, run_id)
+                if run is not None and run.status == "queued":
+                    _finish(run, "failed", {}, "Another project fetch kept running for an "
+                            "hour, so the daily discovery could not start.", retryable=True)
+            return {"run_id": run_id, "error": "fetch lock busy"}
+
+    status, eligible = "failed", []
+    try:
+        with _app_ctx(space_id):
+            from app.models import add_log, get_setting
+            from bot.project_discovery import (
+                _finish, claim_run, execute_run, record_analysis,
+            )
+            run = claim_run(run_id)
+            if run is None:
+                return {"run_id": run_id, "skipped": "not queued (already taken or stopped)"}
+            _task_running("project_fetch", space_id)
+
+            def on_progress(phase, current, total, message):
+                _emit("project_progress", {
+                    "task": "project_fetch", "phase": phase, "current": current,
+                    "total": total, "message": f"Daily discovery · {message}",
+                }, space_id)
+
+            try:
+                result = execute_run(run, on_progress=on_progress)
+            except Exception as exc:
+                logger.exception("daily_project_discovery(%s) raised: %s", run_id, exc)
+                from app import db
+                db.session.rollback()
+                _finish(run, "failed", {}, f"Unexpected error: {exc}", retryable=True)
+                add_log("projects", "ERROR", f"Daily discovery failed: {exc}")
+                result = {"status": "failed", "eligible_ids": [], "stats": {}}
+            status, eligible = result["status"], result["eligible_ids"]
+
+            if status == "completed" and eligible:
+                auto = (get_setting("project_auto_analyze", "true") or "true") \
+                    .strip().lower() == "true"
+                if auto:
+                    analyze_all_projects.delay(space_id, eligible, None)
+                    record_analysis(run_id, len(eligible))
+                    add_log("projects", "INFO",
+                            f"Daily discovery sent {len(eligible)} eligible project(s) "
+                            f"to analysis and proposal writing.")
+                else:
+                    record_analysis(run_id, 0, "Auto-Analyze After Fetch is disabled — "
+                                    "analyse them from the Projects page.")
+            stats = result.get("stats") or {}
+            _emit("task_complete", {
+                "type": "project_discovery", "status": status, "run_id": run_id,
+                "note": (f"{stats.get('in_window', 0)} published today in the pages read, "
+                         f"{len(eligible)} eligible" if status == "completed" else ""),
+                "error": None if status in ("completed", "skipped", "stopped")
+                else (run.error or "failed"),
+            }, space_id)
+            return {"run_id": run_id, "status": status, "eligible": len(eligible)}
+    finally:
+        _release_fetch_lock(space_id, owner)
+        # A manual fetch queued meanwhile still owns the flag; otherwise go idle.
+        if not any(args and int(args[0]) == int(space_id)
+                   for args in _queued_args("tasks.fetch_projects")):
+            _task_idle("project_fetch", space_id)
+
+
+@celery.task(name="tasks.cleanup_expired_projects_all")
+def cleanup_expired_projects_all():
+    """Every 15 min (beat): remove expired Skipped/Failed projects in every Space."""
+    totals = {"spaces": 0, "deleted": 0, "protected": 0, "errors": 0}
+    with _app_ctx():
+        from app.models import Space
+        space_ids = [s.id for s in Space.query.all()]
+    for sid in space_ids:
+        try:
+            with _app_ctx(sid):
+                from bot.project_cleanup import cleanup_expired_projects
+                busy = (_queued_task_ids("tasks.analyze_project", sid)
+                        | _queued_task_ids("tasks.regenerate_proposal", sid))
+                summary = cleanup_expired_projects(sid, busy_ids=busy)
+            totals["spaces"] += 1
+            for key in ("deleted", "protected", "errors"):
+                totals[key] += summary.get(key, 0)
+            if summary.get("deleted"):
+                _emit("projects_cleaned", {"deleted": summary["deleted"]}, sid)
+        except Exception as exc:
+            logger.warning("Project cleanup failed for Space %s: %s", sid, exc)
+    return totals
+
+
 # ── Seed task-status settings on import ───────────────────────────────────────
 # These keys must exist in the Setting table so the dashboard can read them
 # before any task has ever run.  We seed them lazily here rather than in
@@ -1657,6 +1914,14 @@ def _reset_stuck_task_statuses(**_):
                 logger.info(
                     "Rescued %d project(s) stuck in an in-flight status.", rescued,
                 )
+
+            # A discovery run 'running' at boot was cut off (no task executes
+            # before worker_ready). 'interrupted' lets the next tick re-arm it —
+            # re-running is safe, filing is an upsert by Freelancer project id.
+            from bot.project_discovery import mark_interrupted
+            cut = mark_interrupted()
+            if cut:
+                logger.info("Marked %d interrupted daily discovery run(s) for a retry.", cut)
         logger.info("Reset task_*_status flags to 'idle' on worker start.")
         _reap_browsers("worker_ready")
 
@@ -1669,9 +1934,10 @@ def _reset_stuck_task_statuses(**_):
             r = _redis.Redis.from_url(
                 os.environ.get("CELERY_BROKER_URL", "redis://localhost:6379/0"))
             stale = [k for k in r.scan_iter("browser_lock:*")]
+            stale += [k for k in r.scan_iter("project_fetch_lock:*")]
             if stale:
                 r.delete(*stale)
-                logger.info("Cleared %d stale browser lock(s).", len(stale))
+                logger.info("Cleared %d stale browser/fetch lock(s).", len(stale))
         except Exception as exc:
             logger.warning("Could not clear stale browser locks: %s", exc)
     except Exception as exc:

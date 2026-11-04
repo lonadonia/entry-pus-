@@ -423,7 +423,8 @@ _TASK_GROUPS = {
     },
     # Projects / Proposals workflow groups
     "project_fetch": {
-        "names": ["tasks.fetch_projects"],
+        # The daily discovery is a project fetch too: Stop ends it the same way.
+        "names": ["tasks.fetch_projects", "tasks.daily_project_discovery"],
         "flags": ["task_project_fetch_status"],
     },
     "project_analyze": {
@@ -653,8 +654,18 @@ def stop_group(group):
                   "all": ["submit", "project_submit"]}.get(group, [])
         for kind in chains:
             r.delete(f"chain:{kind}:{g.space_id}")
+        # The killed fetch's finally never released its lock (TTL 30 min).
+        if group in ("project_fetch", "all"):
+            r.delete(f"project_fetch_lock:{g.space_id}")
     except redis.RedisError:
         pass
+    if group in ("project_fetch", "all"):
+        # Stopped by the operator: recorded as such and never re-armed by the tick.
+        try:
+            from bot.project_discovery import mark_stopped
+            mark_stopped(g.space_id)
+        except Exception:
+            db.session.rollback()
 
     total = len(revoked_ids) + queue_drained
     label = "all tasks" if group == "all" else group

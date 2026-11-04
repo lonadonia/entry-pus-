@@ -574,25 +574,35 @@ class ProjectScraper:
 
     # ── Phase 2: listing ───────────────────────────────────────────────────────
 
-    def scan_listing(self, on_progress: Optional[Callable], summary: dict) -> list:
+    def scan_listing(self, on_progress: Optional[Callable], summary: dict,
+                     cutoff: Optional[datetime] = None, pages: Optional[int] = None) -> list:
         """
-        Unique projects from the search, newest first, up to the configured depth.
-        Stops early once a whole page is older than the age window: the order is
-        newest-first apart from a few promoted rows, so one old row proves nothing.
+        Unique projects from the search, newest first, up to *pages* search pages
+        (default: the configured depth). Stops early once a whole page is older than
+        *cutoff* (default: the age window): the order is newest-first apart from a
+        few promoted rows, so one old row proves nothing.
+
+        Records why it stopped in summary["stop_reason"] — end_of_results,
+        reached_cutoff, page_limit or stopped — because "we read 200 projects" and
+        "we read every project since midnight" are different claims.
         """
-        target = self.pages_to_fetch * RESULTS_PER_SEARCH_PAGE
-        cutoff = self._age_cutoff()
+        target = (pages or self.pages_to_fetch) * RESULTS_PER_SEARCH_PAGE
+        cutoff = cutoff if cutoff is not None else self._age_cutoff()
         seen: dict = {}
         offset = 0
+        summary["stop_reason"] = "page_limit"
         while len(seen) < target:
             if self._stop_requested():
                 summary["stopped"] = True
+                summary["stop_reason"] = "stopped"
                 add_log("projects", "WARNING", "Stop requested — halting the listing scan.")
                 break
             limit = min(PAGE_LIMIT, target - len(seen))
             page, total = self.api.search_projects(self.filters, offset, limit)
             summary["available"] = total
+            summary["api_calls"] = summary.get("api_calls", 0) + 1
             if not page:
+                summary["stop_reason"] = "end_of_results"
                 break
             all_old = bool(cutoff)
             for raw in page:
@@ -612,9 +622,18 @@ class ProjectScraper:
             if on_progress:
                 on_progress("listing", min(len(seen), target), target,
                             f"Reading the search results — {len(seen)} of {target}")
-            if offset >= total or all_old:
+            if offset >= total:
+                summary["stop_reason"] = "end_of_results"
                 break
-        return list(seen.values())[:target]
+            if all_old:
+                summary["stop_reason"] = "reached_cutoff"
+                break
+        listing = list(seen.values())[:target]
+        if listing:
+            summary["oldest_scanned_at"] = (
+                _epoch_to_utc(listing[-1].get("time_submitted")) or datetime.now(timezone.utc)
+            ).isoformat()
+        return listing
 
     # ── Phase 3: upsert + classify ─────────────────────────────────────────────
 
@@ -737,16 +756,68 @@ class ProjectScraper:
             "available": 0, "scanned": 0, "total_found": 0, "new": 0, "fetched": 0,
             "skipped": 0, "closed": 0, "already_bid": 0, "expired": 0, "failed": 0,
             "duplicates": 0, "attachments": 0, "skip_reasons": {},
+            "previously_removed": 0, "known": 0, "stop_reason": None,
             "ignored_filters": self.ignored_filters, "stopped": False, "error": None,
         }
 
-    def run_full_fetch(self, on_progress: Optional[Callable] = None) -> dict:
+    @staticmethod
+    def _published_in(raw: dict, start: datetime, end: datetime) -> bool:
+        posted = _epoch_to_utc(raw.get("time_submitted"))
+        return posted is not None and start <= posted < end
+
+    @staticmethod
+    def _coverage(summary: dict, window_start: datetime) -> str:
+        """
+        complete — the scan reached the end of the results, or read past the start
+                   of the window (newest-first order: nothing in the window is left)
+        partial  — the page limit ran out while still inside the window
+        unknown  — stopped by hand, or nothing to judge by
+        """
+        reason = summary.get("stop_reason")
+        if reason in ("end_of_results", "reached_cutoff"):
+            return "complete"
+        if reason == "page_limit":
+            oldest = summary.get("oldest_scanned_at")
+            try:
+                if oldest and datetime.fromisoformat(oldest) < window_start:
+                    return "complete"
+            except ValueError:
+                pass
+            return "partial"
+        return "unknown"
+
+    @staticmethod
+    def _archived_ids(ids: list) -> set:
+        """Projects the automatic cleanup removed — never re-created or re-analysed."""
+        from app.models import ProjectArchive
+        if not ids:
+            return set()
+        rows = db.session.query(ProjectArchive.external_id).filter(
+            ProjectArchive.space_id == g.space_id,
+            ProjectArchive.external_id.in_([str(i) for i in ids]),
+        ).all()
+        return {r[0] for r in rows}
+
+    def run_full_fetch(self, on_progress: Optional[Callable] = None, *,
+                       window: Optional[tuple] = None,
+                       page_limit: Optional[int] = None) -> dict:
         """
         One complete extraction. Always returns the summary and stores it for the
         Projects page; a failure is reported there and in the log rather than
         hidden, and whatever was already saved stays saved.
+
+        With *window* = (start, end) as aware UTC datetimes — the daily discovery —
+        only projects PUBLISHED inside it are filed (by their real `time_submitted`,
+        never by when they were read), the scan stops once it is past the window's
+        start, and it reads at most *page_limit* search pages. The summary then also
+        says whether that covered the whole window ("coverage": complete) or the page
+        limit cut it short ("partial"), and lists the eligible ids for analysis.
         """
         summary = self._new_summary()
+        if window is not None:
+            summary.update(window_start=window[0].isoformat(), window_end=window[1].isoformat(),
+                           page_limit=page_limit or self.pages_to_fetch, in_window=0,
+                           outside_window=0, eligible_ids=[], coverage="unknown")
         if self.ignored_filters:
             add_log("projects", "WARNING",
                     "The search URL has filter(s) this app cannot apply, so they are "
@@ -760,11 +831,25 @@ class ProjectScraper:
                 on_progress("recheck", 0, 0, "Checking stored projects are still open…")
             self.recheck_stored(account, summary)
 
-            listing = self.scan_listing(on_progress, summary)
-            summary["scanned"] = summary["total_found"] = len(listing)
+            if window is None:
+                listing = self.scan_listing(on_progress, summary)
+            else:
+                listing = self.scan_listing(on_progress, summary, cutoff=window[0],
+                                            pages=page_limit or self.pages_to_fetch)
+                summary["pages_scanned"] = -(-len(listing) // RESULTS_PER_SEARCH_PAGE)
+                summary["coverage"] = self._coverage(summary, window[0])
+                inside = [raw for raw in listing
+                          if self._published_in(raw, window[0], window[1])]
+                summary["in_window"] = len(inside)
+                summary["outside_window"] = len(listing) - len(inside)
+                listing = inside
+            summary["scanned"] = summary["total_found"] = (
+                len(listing) if window is None else summary["in_window"] + summary["outside_window"])
             add_log("projects", "INFO",
                     f"Search has {summary['available']} matching open project(s); "
-                    f"reading the newest {len(listing)}.")
+                    + (f"reading the newest {len(listing)}." if window is None else
+                       f"read the newest {summary['scanned']} ({summary.get('pages_scanned', 0)} "
+                       f"page(s)), {summary['in_window']} published in the window."))
             if summary["stopped"]:
                 return summary
 
@@ -777,6 +862,10 @@ class ProjectScraper:
                     Project.external_id.in_([str(i) for i in ids]),
                 ).all()
             }
+            archived = self._archived_ids(ids) - set(known)
+            if archived:
+                summary["previously_removed"] = len(archived)
+                listing = [raw for raw in listing if str(raw["id"]) not in archived]
 
             newly_fetched: list[Project] = []
             reasons: Counter = Counter()
@@ -793,6 +882,7 @@ class ProjectScraper:
                     continue
                 project = known[str(raw["id"])]
                 summary["new"] += int(is_new)
+                summary["known"] += int(outcome == "known")
                 if outcome == "skipped":
                     summary["skipped"] += 1
                     label = skip_category(project.skip_reason)
@@ -823,6 +913,17 @@ class ProjectScraper:
                         db.session.commit()
                         continue
                     summary["attachments"] += self._store_attachments(project, raw)
+
+            if window is not None:
+                # Everything published in the window that is waiting for analysis:
+                # the projects filed just now AND ones an earlier fetch left
+                # 'fetched' (a manual run's analysis cap, a stop), but never a row
+                # a person or the analysis has already moved on.
+                in_ids = [str(raw["id"]) for raw in listing]
+                waiting = Project.query.filter(
+                    Project.space_id == g.space_id, Project.status == _AWAITING_ANALYSIS,
+                    Project.external_id.in_(in_ids)).all()
+                summary["eligible_ids"] = sorted(p.id for p in waiting)
 
         except SessionExpiredError as exc:
             save_setting("cookie_status", "expired")

@@ -108,7 +108,8 @@ def create_app() -> Flask:
         from app.models import (
             migrate_to_spaces, migrate_design_columns,
             migrate_log_module_critic, migrate_project_tables,
-            migrate_contest_status_blocked, seed_default_settings,
+            migrate_contest_status_blocked, migrate_discovery_and_cleanup,
+            seed_default_settings,
         )
 
         _LOCK_KEY = 727274
@@ -132,6 +133,7 @@ def create_app() -> Flask:
             migrate_log_module_critic()
             migrate_project_tables()
             migrate_contest_status_blocked()
+            migrate_discovery_and_cleanup()
             # Seed EVERY Space, not just Default — seed_default_settings is
             # per-key idempotent, so any _DEFAULTS keys added since a Space was
             # created are backfilled here on the next boot automatically.

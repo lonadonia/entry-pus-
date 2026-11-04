@@ -4,6 +4,40 @@
 
 {% block head %}
 <style>
+  /* ── Projects · Today ─────────────────────────────────────────────────── */
+  .pt-card {
+    position: relative; display: flex; flex-direction: column; gap: .5rem;
+    min-height: 168px; padding: 1.15rem 1.25rem; border-radius: 14px;
+    background: linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,0)) , #12141f;
+    border: 1px solid #1e2030; transition: border-color .15s ease, transform .15s ease;
+  }
+  .pt-card:hover { border-color: #2a2e45; transform: translateY(-1px); }
+  .pt-card-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+  .pt-label { font-size: .6875rem; letter-spacing: .06em; text-transform: uppercase; color: #8b95a7; font-weight: 600; }
+  .pt-icon { display: inline-flex; padding: .45rem; border-radius: 10px; }
+  .pt-value { font-size: 2.1rem; line-height: 1.1; font-weight: 700; color: #e2e8f0; font-variant-numeric: tabular-nums; }
+  .pt-value small { font-size: .95rem; font-weight: 500; color: #8b95a7; margin-left: .25rem; }
+  .pt-sub { font-size: .75rem; color: #8b95a7; line-height: 1.45; }
+  .pt-chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: auto; }
+  .pt-chip { font-size: .6875rem; padding: .15rem .5rem; border-radius: 999px; background: rgba(255,255,255,.04);
+             border: 1px solid #1e2030; color: #cbd5e1; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .pt-chip b { font-weight: 600; color: #e2e8f0; }
+  .pt-pill { display: inline-flex; align-items: center; gap: .3rem; font-size: .6875rem; font-weight: 600;
+             padding: .12rem .5rem; border-radius: 999px; }
+  .pt-ok    { background: rgba(34,197,94,.14);  color: #22c55e; }
+  .pt-warn  { background: rgba(245,158,11,.15); color: #f59e0b; }
+  .pt-bad   { background: rgba(239,68,68,.14);  color: #ef4444; }
+  .pt-info  { background: rgba(79,110,247,.15); color: #7b93ff; }
+  .pt-muted { background: rgba(100,116,139,.15); color: #94a3b8; }
+  .pt-empty { font-size: .75rem; color: #8b95a7; margin-top: .15rem; }
+  .pt-split { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  .pt-split .pt-value { font-size: 1.75rem; }
+  .pt-kv { display: grid; grid-template-columns: auto 1fr; gap: .2rem .75rem; font-size: .75rem; }
+  .pt-kv dt { color: #8b95a7; } .pt-kv dd { color: #e2e8f0; margin: 0; font-variant-numeric: tabular-nums; }
+  .pt-bar { height: 6px; border-radius: 99px; background: #1e2030; overflow: hidden; display: flex; margin-top: .25rem; }
+  .pt-bar span { display: block; height: 100%; }
+  @media (prefers-reduced-motion: reduce) { .pt-card, .stat-card { transition: none; } .pt-card:hover { transform: none; } }
+
   /* Stat card hover lift */
   .stat-card { transition: transform .15s ease, box-shadow .15s ease; }
   .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
@@ -105,6 +139,102 @@
 {% endblock %}
 
 {% block content %}
+
+<!-- ── Projects · Today ────────────────────────────────────────────────────── -->
+<section id="projects-today" aria-labelledby="pt-title" class="mb-8">
+  <div class="flex flex-wrap items-end justify-between gap-3 mb-4">
+    <div>
+      <h2 id="pt-title" class="text-base font-semibold text-primary flex flex-wrap items-center gap-x-2 gap-y-0.5">
+        <i data-lucide="calendar-days" class="w-4 h-4 text-accent"></i>
+        Projects · Today
+        <span id="pt-date" class="text-xs font-normal text-muted"></span>
+      </h2>
+      <p id="pt-scope" class="text-xs text-muted mt-0.5">Counted by publication time on Freelancer, in your search scope.</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="pt-updated" class="text-[11px] text-muted tabular-nums" aria-live="polite"></span>
+      <a href="/projects" class="text-xs text-accent hover:underline flex items-center gap-1">
+        Open Projects <i data-lucide="arrow-right" class="w-3 h-3"></i></a>
+    </div>
+  </div>
+
+  <div id="pt-error" class="hidden mb-3 px-4 py-2.5 rounded-lg text-xs bg-danger/10 border border-danger/20 text-danger"></div>
+
+  <div class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+
+    <!-- 1 · Published today -->
+    <article class="pt-card" aria-labelledby="pt-pub-label">
+      <div class="pt-card-head">
+        <span id="pt-pub-label" class="pt-label">Projects Published Today</span>
+        <span class="pt-icon bg-accent/10"><i data-lucide="radar" class="w-4 h-4 text-accent"></i></span>
+      </div>
+      <div id="pt-pub-value" class="pt-value"><div class="skeleton h-8 w-16"></div></div>
+      <p id="pt-pub-sub" class="pt-sub">&nbsp;</p>
+      <div id="pt-pub-chips" class="pt-chips"></div>
+    </article>
+
+    <!-- 2 · Proposals ready today -->
+    <article class="pt-card" aria-labelledby="pt-ready-label">
+      <div class="pt-card-head">
+        <span id="pt-ready-label" class="pt-label">Proposals Ready Today</span>
+        <span class="pt-icon bg-success/10"><i data-lucide="file-check-2" class="w-4 h-4 text-success"></i></span>
+      </div>
+      <div id="pt-ready-value" class="pt-value"><div class="skeleton h-8 w-16"></div></div>
+      <p id="pt-ready-sub" class="pt-sub">&nbsp;</p>
+      <div id="pt-ready-bar" class="pt-bar hidden" aria-hidden="true"></div>
+      <div id="pt-ready-chips" class="pt-chips"></div>
+    </article>
+
+    <!-- 3 · Processing -->
+    <article class="pt-card" aria-labelledby="pt-proc-label">
+      <div class="pt-card-head">
+        <span id="pt-proc-label" class="pt-label">Projects Processing</span>
+        <span class="pt-icon bg-warning/10"><i id="pt-proc-icon" data-lucide="cpu" class="w-4 h-4 text-warning"></i></span>
+      </div>
+      <div id="pt-proc-value" class="pt-value"><div class="skeleton h-8 w-16"></div></div>
+      <p id="pt-proc-sub" class="pt-sub">&nbsp;</p>
+      <div id="pt-proc-chips" class="pt-chips"></div>
+    </article>
+
+    <!-- 4 · Skipped / failed -->
+    <article class="pt-card" aria-labelledby="pt-sf-label">
+      <div class="pt-card-head">
+        <span id="pt-sf-label" class="pt-label">Skipped / Failed</span>
+        <span class="pt-icon bg-white/5"><i data-lucide="circle-slash" class="w-4 h-4 text-muted"></i></span>
+      </div>
+      <div class="pt-split">
+        <div><div id="pt-skip-value" class="pt-value"><div class="skeleton h-7 w-10"></div></div>
+             <p class="pt-sub">skipped</p></div>
+        <div><div id="pt-fail-value" class="pt-value"><div class="skeleton h-7 w-10"></div></div>
+             <p class="pt-sub">failed</p></div>
+      </div>
+      <p id="pt-sf-sub" class="pt-sub mt-auto">&nbsp;</p>
+    </article>
+
+    <!-- 5 · Last discovery run -->
+    <article class="pt-card" aria-labelledby="pt-last-label">
+      <div class="pt-card-head">
+        <span id="pt-last-label" class="pt-label">Last Discovery Run</span>
+        <span class="pt-icon bg-accent/10"><i data-lucide="history" class="w-4 h-4 text-accent"></i></span>
+      </div>
+      <div id="pt-last-body"><div class="skeleton h-4 w-40 mb-2"></div><div class="skeleton h-4 w-56"></div></div>
+    </article>
+
+    <!-- 6 · Next scheduled run -->
+    <article class="pt-card" aria-labelledby="pt-next-label">
+      <div class="pt-card-head">
+        <span id="pt-next-label" class="pt-label">Next Scheduled Run</span>
+        <span class="pt-icon bg-accent/10"><i data-lucide="alarm-clock" class="w-4 h-4 text-accent"></i></span>
+      </div>
+      <div id="pt-next-body"><div class="skeleton h-8 w-32 mb-2"></div><div class="skeleton h-4 w-48"></div></div>
+    </article>
+
+  </div>
+</section>
+
+<h2 class="text-base font-semibold text-primary flex items-center gap-2 mb-4">
+  <i data-lucide="trophy" class="w-4 h-4 text-accent"></i> Contests
+</h2>
 
 <!-- ── Stat cards ──────────────────────────────────────────────────────────── -->
 <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -1209,10 +1339,219 @@ window.addEventListener('contest_updated', e => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Projects · Today — every number comes from /api/projects/today (the database).
+// Times are shown in the discovery timezone, so the cards, the schedule and
+// "today" all mean the same calendar day.
+// ─────────────────────────────────────────────────────────────────────────────
+const PT_STATUS = {
+  fetched: 'to analyze', analyzing: 'analyzing', approved: 'ready to submit',
+  draft_ready: 'needs review', needs_review: 'needs review', submitting: 'submitting',
+  submitted: 'submitted', skipped: 'skipped', failed: 'failed', closed: 'closed',
+  discovered: 'discovered', fetching: 'fetching',
+};
+const PT_RUN = {
+  completed: ['Completed', 'pt-ok'], running: ['Running', 'pt-info'], queued: ['Queued', 'pt-info'],
+  failed: ['Failed', 'pt-bad'], interrupted: ['Interrupted', 'pt-warn'],
+  skipped: ['Skipped', 'pt-warn'], stopped: ['Stopped', 'pt-muted'],
+};
+const PT_TRIGGER = { scheduled: 'on schedule', catch_up: 'caught up late', manual: 'started by hand' };
+let _pt = null;            // last good payload (kept when a refresh fails)
+let _ptTimer = null;
+
+const ptNum = v => Number(v || 0).toLocaleString();
+function ptChip(label, value) { return `<span class="pt-chip"><b>${ptNum(value)}</b> ${esc(label)}</span>`; }
+function ptSet(id, html) { const el = document.getElementById(id); if (el && el.innerHTML !== html) el.innerHTML = html; }
+
+function ptRelative(isoUtc) {
+  const ms = new Date(isoUtc).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return '';
+  const past = ms < 0, mins = Math.round(Math.abs(ms) / 60000);
+  const text = mins < 1 ? 'less than a minute' : mins < 60 ? `${mins} min`
+    : `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min`;
+  return past ? `${text} ago` : `in ${text}`;
+}
+
+// Absolute times are formatted by the SERVER, from the version-locked tz database.
+// The browser's own tz data can be older: Chromium still had Casablanca on UTC+1
+// after Morocco moved to UTC+0 on 2026-09-20, and showed 23:00 as 00:00.
+function ptClock(localStr) {           // "2026-11-04 23:00 +00" → "23:00"
+  const m = /\b(\d{2}:\d{2})\b/.exec(localStr || '');
+  return m ? m[1] : '';
+}
+function ptDayLabel(isoDate) {         // "2026-11-04" → "Wed, Nov 4" (calendar maths only)
+  try {
+    return new Date(isoDate + 'T12:00:00Z').toLocaleDateString(undefined,
+      { timeZone: 'UTC', weekday: 'short', day: 'numeric', month: 'short' });
+  } catch (e) { return isoDate || ''; }
+}
+function ptNowLocal(offset) {          // "+0100" → the current wall-clock time there
+  const m = /^([+-])(\d{2})(\d{2})$/.exec(offset || '');
+  if (!m) return '';
+  const mins = (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3]));
+  const t = new Date(Date.now() + mins * 60000);
+  return `${String(t.getUTCHours()).padStart(2, '0')}:${String(t.getUTCMinutes()).padStart(2, '0')}`;
+}
+
+function renderPublished(d) {
+  const pub = d.published_today || {}, by = pub.by_status || {};
+  ptSet('pt-pub-value', ptNum(pub.total));
+  const disc = d.discovery || {}, last = disc.last_run;
+  let sub = 'Stored so far for today, from daily discovery and manual fetches.';
+  if (last && last.target_date === d.date && last.status === 'completed') {
+    const st = last.stats || {};
+    sub = `${ptNum(st.in_window)} found in the ${ptNum(last.pages_scanned)} page(s) the last run read`
+        + (last.coverage === 'partial' ? ' — partial: the page limit was reached before midnight.' : '.');
+  } else if (!pub.total) {
+    sub = disc.enabled ? `None stored yet — today's discovery runs at ${esc(disc.time)}.` : 'None stored yet.';
+  }
+  ptSet('pt-pub-sub', esc(sub).replace('partial:', '<b class="text-warning">partial</b>:'));
+  const order = ['fetched', 'analyzing', 'approved', 'draft_ready', 'submitted', 'skipped', 'closed', 'failed'];
+  ptSet('pt-pub-chips', order.filter(k => by[k]).map(k => ptChip(PT_STATUS[k], by[k])).join(''));
+}
+
+function renderReady(d) {
+  const r = d.ready_today || {};
+  ptSet('pt-ready-value', ptNum(r.total));
+  const sub = r.total
+    ? `Proposals written for today's projects and through the quality checks.`
+    : ((d.published_today || {}).total ? 'No proposal finished for today\'s projects yet.' : 'Nothing published today yet.');
+  ptSet('pt-ready-sub', esc(sub));
+  const bar = document.getElementById('pt-ready-bar');
+  if (r.total) {
+    const seg = [[r.approved, '#22c55e'], [r.awaiting_approval, '#f59e0b'], [r.submitted, '#4f6ef7']];
+    bar.innerHTML = seg.filter(([v]) => v).map(([v, c]) => `<span style="width:${(100 * v / r.total).toFixed(1)}%;background:${c}"></span>`).join('');
+    bar.classList.remove('hidden');
+  } else {
+    bar.classList.add('hidden');
+  }
+  const chips = [ptChip('ready to submit', r.approved), ptChip('awaiting your approval', r.awaiting_approval),
+                 ptChip('submitted', r.submitted)];
+  if (r.held) chips.push(`<span class="pt-chip text-warning" title="A claim the profile doesn't support is still in the draft">⚠ <b>${ptNum(r.held)}</b> held for review</span>`);
+  ptSet('pt-ready-chips', chips.join(''));
+}
+
+function renderProcessing(d) {
+  const p = d.processing || {};
+  ptSet('pt-proc-value', ptNum(p.total));
+  const icon = document.getElementById('pt-proc-icon');
+  if (icon) icon.parentElement.classList.toggle('pulse', p.total > 0);
+  ptSet('pt-proc-sub', p.total ? 'Being analysed or getting a proposal written right now, or queued for it.'
+                               : 'Nothing in progress.');
+  ptSet('pt-proc-chips', [ptChip('analyzing', p.analyzing), ptChip('queued', p.queued)].join(''));
+}
+
+function renderSkippedFailed(d) {
+  const sf = d.skipped_failed || {};
+  ptSet('pt-skip-value', ptNum(sf.skipped));
+  ptSet('pt-fail-value', ptNum(sf.failed));
+  let sub = sf.cleanup_enabled
+    ? `Removed automatically ${ptNum(sf.cleanup_after_hours)} h after entering the status (never one with a bid).`
+    : 'Automatic cleanup is off.';
+  const lc = sf.last_cleanup;
+  if (sf.cleanup_enabled && lc && lc.ran_at) {
+    sub += ` Last sweep ${ptRelative(lc.ran_at)}: ${ptNum(lc.deleted)} removed`
+         + (lc.protected ? `, ${ptNum(lc.protected)} kept (bid evidence)` : '') + '.';
+  }
+  ptSet('pt-sf-sub', esc(sub));
+}
+
+function renderLastRun(d) {
+  const disc = d.discovery || {}, run = disc.last_run;
+  if (!run) {
+    ptSet('pt-last-body', `<div class="pt-value text-muted">—</div>
+      <p class="pt-empty">No discovery run yet.${disc.enabled && disc.next_run
+        ? ` The first one is scheduled for ${esc(disc.next_run.local)}.` : ''}</p>`);
+    return;
+  }
+  const [label, cls] = PT_RUN[run.status] || [run.status, 'pt-muted'];
+  const st = run.stats || {};
+  const when = (run.finished_at || run.started_at || run.scheduled_for || {});
+  const coverage = run.coverage === 'complete' ? '<span class="pt-pill pt-ok">Whole day covered</span>'
+    : run.coverage === 'partial' ? '<span class="pt-pill pt-warn" title="The page limit ran out before the start of the day">Partial scan</span>' : '';
+  const rows = [];
+  if (run.pages_scanned != null) rows.push(['Pages scanned', `${ptNum(run.pages_scanned)} / ${ptNum(run.page_limit)}`]);
+  if (st.in_window != null) rows.push(['Published that day', ptNum(st.in_window)]);
+  if (st.eligible != null) rows.push(['Eligible', ptNum(st.eligible) + (st.skipped ? ` <span class="text-muted">· ${ptNum(st.skipped)} skipped by filters</span>` : '')]);
+  if (st.analysis_queued != null) rows.push(['Sent to analysis', ptNum(st.analysis_queued)]);
+  const res = d.last_run_results || {};
+  const done = Object.keys(res).length
+    ? ['approved', 'draft_ready', 'analyzing', 'fetched', 'skipped', 'failed', 'submitted']
+        .filter(k => res[k]).map(k => ptChip(PT_STATUS[k], res[k])).join('') : '';
+  ptSet('pt-last-body', `
+    <div class="flex flex-wrap items-center gap-1.5"><span class="pt-pill ${cls}">${esc(label)}</span>${coverage}</div>
+    <p class="pt-sub mt-1">${esc(run.target_date || '')} · ${esc(PT_TRIGGER[run.trigger] || run.trigger)}
+      ${when.utc ? `· ran ${esc(when.local || '')} (${esc(ptRelative(when.utc))})` : ''}</p>
+    ${rows.length ? `<dl class="pt-kv mt-2">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join('')}</dl>` : ''}
+    ${run.error ? `<p class="pt-sub text-warning mt-2">${esc(run.error)}</p>` : ''}
+    ${done ? `<p class="pt-label mt-3 mb-1">Results so far</p><div class="pt-chips">${done}</div>` : ''}`);
+}
+
+function renderNextRun(d) {
+  const disc = d.discovery || {}, sch = disc.scheduler || {};
+  if (!disc.enabled || !disc.next_run) {
+    ptSet('pt-next-body', `<div class="pt-value text-muted">Off</div>
+      <p class="pt-empty">Daily discovery is disabled. <a href="/settings#discovery-card" class="text-accent hover:underline">Turn it on in Settings</a>.</p>`);
+    return;
+  }
+  const health = sch.state === 'active'
+    ? '<span class="pt-pill pt-ok"><span class="w-1.5 h-1.5 rounded-full bg-success pulse"></span>Scheduler running</span>'
+    : sch.state === 'not_running'
+      ? '<span class="pt-pill pt-bad" title="No heartbeat from the celery_beat service for over 3 minutes">Scheduler not running</span>'
+      : '<span class="pt-pill pt-warn" title="No scheduler heartbeat found — is the celery_beat service deployed?">Scheduler status unknown</span>';
+  ptSet('pt-next-body', `
+    <div class="pt-value">${esc(ptClock(disc.next_run.local) || disc.time)}<small>${esc(ptDayLabel(disc.next_run.date))}</small></div>
+    <p class="pt-sub"><b class="text-primary">${esc(ptRelative(disc.next_run.utc))}</b> · ${esc(disc.timezone)} (${esc(disc.tz_abbrev || '')})</p>
+    <div class="flex flex-wrap items-center gap-1.5 mt-1">${health}</div>
+    <p class="pt-sub mt-auto">Reads ${ptNum(disc.pages)} page(s) — the ${ptNum(disc.pages * (disc.projects_per_page || 20))} newest projects in your search.</p>
+    ${disc.missed ? `<p class="pt-sub text-danger">The run due ${esc(disc.missed.due)} was missed.</p>` : ''}
+    ${(disc.config_errors || []).map(e => `<p class="pt-sub text-warning">${esc(e)}</p>`).join('')}`);
+}
+
+function renderProjectsToday(d) {
+  _pt = d;
+  const disc = d.discovery || {};
+  ptSet('pt-date', esc(`${d.date} · ${disc.timezone || d.timezone} (${d.tz_abbrev || ''})`));
+  renderPublished(d); renderReady(d); renderProcessing(d); renderSkippedFailed(d);
+  renderLastRun(d); renderNextRun(d);
+  ptSet('pt-updated', `Updated ${esc(ptNowLocal(disc.utc_offset))} ${esc(d.tz_abbrev || '')}`
+                     + (d.fetch_running ? ' · fetch running…' : ''));
+  document.getElementById('pt-error').classList.add('hidden');
+  lucide.createIcons({ nodes: [document.getElementById('projects-today')] });
+}
+
+async function loadProjectsToday() {
+  try {
+    const r = await fetch('/api/projects/today');
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    renderProjectsToday(d);
+  } catch (err) {
+    const box = document.getElementById('pt-error');
+    box.textContent = `Couldn't refresh today's project numbers (${err.message}). ` +
+                      (_pt ? 'Showing the last values.' : '');
+    box.classList.remove('hidden');
+  }
+}
+
+function scheduleProjectsToday(delay = 1200) {
+  clearTimeout(_ptTimer);
+  _ptTimer = setTimeout(loadProjectsToday, delay);
+}
+window.addEventListener('task_complete', e => {
+  if (String((e.detail || {}).type || '').startsWith('project')) scheduleProjectsToday();
+});
+window.addEventListener('project_updated', () => scheduleProjectsToday(2500));
+window.addEventListener('projects_cleaned', () => scheduleProjectsToday());
+// Relative times ("in 9 h 12 min") move on their own; the numbers poll every minute.
+setInterval(() => { if (_pt) { renderNextRun(_pt); renderLastRun(_pt); } }, 30_000);
+setInterval(loadProjectsToday, 60_000);
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Init
 // ─────────────────────────────────────────────────────────────────────────────
 loadContests(1);
 refreshStats();
+loadProjectsToday();
 lucide.createIcons();
 </script>
 {% endblock %}

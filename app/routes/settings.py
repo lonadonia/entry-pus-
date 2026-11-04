@@ -65,6 +65,13 @@ _FIELDS: list[tuple[str, str, str, bool]] = [
     ("project_auto_analyze",        "Auto-Analyze After Fetch",          "text",     False),
     ("project_require_approval",    "Require Manual Approval",           "text",     False),
     ("project_max_revisions",       "Max Proposal Revisions",            "number",   False),
+    # ── Daily discovery + cleanup ─────────────────────────────────────────────
+    ("project_discovery_enabled",   "Daily Discovery",                   "text",     False),
+    ("project_discovery_time",      "Discovery Time (local, HH:MM)",     "text",     False),
+    ("project_discovery_timezone",  "Discovery Timezone (IANA)",         "text",     False),
+    ("project_discovery_pages",     "Discovery Search Pages",            "number",   False),
+    ("project_cleanup_enabled",     "Auto-Delete Skipped/Failed",        "text",     False),
+    ("project_cleanup_after_hours", "Delete After (hours)",              "number",   False),
     # ── Freelancer profile ────────────────────────────────────────────────────
     ("profile_title",               "Professional Title",                "text",     False),
     ("profile_summary",             "Profile Summary",                   "text",     False),
@@ -81,6 +88,7 @@ _INTERNAL_KEYS: set[str] = {
     # Written by the app, shown read-only: the Freelancer.com profile snapshot and
     # the last fetch report.
     "freelancer_profile_json", "project_last_fetch_json",
+    "project_last_cleanup_json", "project_discovery_since",
     # Superseded by the AI Agents page: the provider/model/parameter set is
     # validated against bot/ai_registry.py, which a free-text form field cannot
     # do. `llm_model` / `image_gen_model` are kept as mirrors of the selection
@@ -137,6 +145,28 @@ def settings_save():
     """
     data = request.get_json(silent=True) or request.form
 
+    # The schedule's time and timezone drive a background job: a typo must be
+    # refused here, not saved and silently replaced by the default at 23:00.
+    from bot import discovery_schedule as sched
+    problems = []
+    if data.get("project_discovery_time") is not None:
+        try:
+            sched.parse_time(data.get("project_discovery_time"))
+        except ValueError as exc:
+            problems.append(f"Discovery time: {exc}")
+    if data.get("project_discovery_timezone") is not None:
+        try:
+            sched.resolve_zone(data.get("project_discovery_timezone"))
+        except ValueError as exc:
+            problems.append(f"Discovery timezone: {exc} Use an IANA name such as "
+                            f"Africa/Casablanca or Europe/Paris.")
+    if problems:
+        return jsonify({"success": False, "message": " ".join(problems),
+                        "problems": problems}), 422
+    schedule_keys = ("project_discovery_enabled", "project_discovery_time",
+                     "project_discovery_timezone")
+    before = {key: get_setting(key) for key in schedule_keys}
+
     saved: list[str] = []
     for key in _SAVE_KEYS:
         val = data.get(key)
@@ -149,8 +179,20 @@ def settings_save():
         # Coerce to canonical forms for the keys that drive bot logic.
         if key in ("auto_submit_enabled", "design_critic_enabled",
                    "prompt_enhancer_enabled", "project_auto_analyze",
-                   "project_require_approval"):
+                   "project_require_approval", "project_discovery_enabled",
+                   "project_cleanup_enabled"):
             val = "true" if val.lower() in ("true", "1", "on", "yes") else "false"
+        elif key == "project_discovery_time":
+            val = sched.parse_time(val).strftime("%H:%M")
+        elif key == "project_discovery_timezone":
+            val = sched.resolve_zone(val).key
+        elif key == "project_discovery_pages":
+            val = str(sched.clamp_pages(val))
+        elif key == "project_cleanup_after_hours":
+            try:
+                val = str(max(1, min(720, int(float(val)))))
+            except (TypeError, ValueError):
+                val = "24"
         elif key == "designs_per_contest":
             try:
                 val = str(max(1, min(5, int(val))))
@@ -163,6 +205,13 @@ def settings_save():
                 val = "55"
         save_setting(key, val)
         saved.append(key)
+
+    # A changed schedule starts counting now: moving 23:00 to 10:00 at noon must
+    # not fire a "missed" 10:00 run immediately, and re-enabling it must not
+    # back-fill the days it was off.
+    if any(get_setting(key) != before[key] for key in schedule_keys):
+        from bot.project_discovery import mark_schedule_changed
+        mark_schedule_changed(g.space_id)
 
     # A submitted key the whitelist doesn't cover is a bug, not user error: the
     # field is on the page, the operator edits it, and the value goes nowhere.

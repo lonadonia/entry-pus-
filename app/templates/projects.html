@@ -585,6 +585,14 @@ function money(v, cur) {
   const sym = CURRENCY_SYMBOLS[cur] || ((cur || '') + ' ');
   return `${sym}${Number(v).toLocaleString(undefined, {maximumFractionDigits: 0})}`;
 }
+function removalText(iso) {
+  // Relative only: absolute times come from the server's tz database elsewhere.
+  const ms = new Date(iso).getTime() - Date.now();
+  if (!Number.isFinite(ms)) return 'soon';
+  if (ms <= 0) return 'at the next sweep';
+  const h = Math.floor(ms / 3600000), m = Math.round((ms % 3600000) / 60000);
+  return h ? `in ${h} h ${String(m).padStart(2, '0')} min` : `in ${m} min`;
+}
 function budgetText(p) {
   const unit = p.project_type === 'hourly' ? '/h' : '';
   if (p.budget_min != null && p.budget_max != null)
@@ -902,7 +910,11 @@ function renderProjects(projects, total) {
     const ourBid = prop && prop.bid_amount
       ? `${money(prop.bid_amount, p.currency)}<span class="text-muted text-[10px]"> / ${prop.period_days || '?'}d</span>`
       : '<span class="text-muted">—</span>';
-    const reason = p.skip_reason || (p.status === 'failed' && prop && prop.error) || '';
+    const removal = p.removal
+      ? (p.removal.protected ? ` · kept: ${p.removal.protected}` : ` · auto-removed ${removalText(p.removal.at)}`)
+      : '';
+    const reason = (p.skip_reason || (p.status === 'failed' && prop && prop.error) || '')
+                   + (p.skip_reason || (p.status === 'failed' && prop && prop.error) ? removal : '');
     const concerns = p.status === 'approved' ? (p.concerns || []).join('; ') : '';
     const warn = reason
       ? `<span class="block text-[10px] ${p.status === 'failed' ? 'text-danger' : 'text-warning'} truncate max-w-md" title="${esc(reason)}">${esc(reason)}</span>`

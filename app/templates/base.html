@@ -488,6 +488,7 @@
       project_analyze_all: ['🚀', 'Project analysis'],
       project_regenerate:  ['✍️', 'Proposal rewrite'],
       project_submit:      ['📤', 'Proposal submission'],
+      project_discovery:   ['🗓', 'Daily discovery'],
     };
     const [icon, subject] = subjects[data.type] || ['', 'Task'];
     const started = data.type === 'analyze_all' || data.type === 'project_analyze_all';
@@ -533,6 +534,11 @@
   socket.on('project_updated', (data) => {
     if (!_forMySpace(data)) return;
     window.dispatchEvent(new CustomEvent('project_updated', { detail: data }));
+  });
+
+  socket.on('projects_cleaned', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('projects_cleaned', { detail: data }));
   });
 
   socket.on('project_progress', (data) => {

@@ -46,6 +46,14 @@
     line-height: 1.5;
   }
   .field-control { display: flex; flex-direction: column; gap: .4rem; }
+  @media (max-width: 640px) {
+    .field-row { grid-template-columns: 1fr; gap: .4rem; }
+    .field-label { padding-top: 0; }
+    .s-card-header { flex-wrap: wrap; }
+  }
+  input[type="time"].s-input { color-scheme: dark; }
+  .disc-pill { display:inline-flex; align-items:center; gap:.35rem; padding:.15rem .55rem;
+               border-radius:999px; font-size:.6875rem; font-weight:500; }
 
   /* ── Inputs ────────────────────────────────────────────────────────────────── */
   .s-input {
@@ -973,6 +981,127 @@
   </div>
 
   <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 6b — Daily discovery + automatic cleanup
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card" id="discovery-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">🗓 Daily Discovery &amp; Cleanup</h2>
+        <p class="text-xs text-muted mt-0.5">
+          Reads the projects published today once a day, at your local time, and sends the
+          eligible ones to analysis. Runs on the server — the dashboard can stay closed.
+          Bids are never submitted automatically.
+        </p>
+      </div>
+      <button type="button" id="discovery-run-btn" onclick="runDiscoveryNow()"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border
+                     text-xs text-muted hover:text-primary hover:border-primary/50
+                     transition-colors flex-shrink-0">
+        <i data-lucide="play" class="w-3.5 h-3.5"></i> Run today's discovery now
+      </button>
+    </div>
+    <div class="s-card-body">
+
+      <div id="discovery-status" class="pb-4 mb-1 border-b border-border text-sm text-muted"
+           aria-live="polite">
+        Checking the scheduler…
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Daily Discovery</div>
+          <div class="field-hint">Run the discovery automatically every day. "Fetch Projects"
+            on the Projects page keeps working either way.</div>
+        </div>
+        <div class="field-control">
+          <select name="project_discovery_enabled" id="field-project_discovery_enabled" class="s-input w-40">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Discovery Time</div>
+          <div class="field-hint">Wall-clock time in the timezone below (default 23:00 — 11 PM).
+            Only projects published that calendar day — by their real Freelancer publication
+            time, not when they were read — are taken.</div>
+        </div>
+        <div class="field-control">
+          <input type="time" name="project_discovery_time" id="field-project_discovery_time"
+                 class="s-input w-32" step="60">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Timezone</div>
+          <div class="field-hint">IANA name (default Africa/Casablanca). Decides both the run
+            time and what "today" means; daylight-saving and Ramadan offset changes are
+            applied automatically from the tz database.</div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="project_discovery_timezone" id="field-project_discovery_timezone"
+                 class="s-input w-64" list="tz-suggestions" placeholder="Africa/Casablanca"
+                 autocomplete="off" spellcheck="false">
+          <datalist id="tz-suggestions">
+            <option value="Africa/Casablanca"></option><option value="UTC"></option>
+            <option value="Europe/London"></option><option value="Europe/Paris"></option>
+            <option value="Europe/Madrid"></option><option value="Europe/Berlin"></option>
+            <option value="Africa/Cairo"></option><option value="Asia/Dubai"></option>
+            <option value="Asia/Karachi"></option><option value="Asia/Kolkata"></option>
+            <option value="America/New_York"></option><option value="America/Chicago"></option>
+            <option value="America/Los_Angeles"></option><option value="America/Mexico_City"></option>
+            <option value="America/Bogota"></option><option value="America/Sao_Paulo"></option>
+            <option value="Australia/Sydney"></option>
+          </datalist>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Search Pages to Scan</div>
+          <div class="field-hint">Newest first, 20 projects per page (default 10 = 200 projects,
+            1–50). The scan stops early once it reaches yesterday; if the limit runs out first,
+            the run is reported as <em>partial</em>, never as a complete count.</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_discovery_pages" id="field-project_discovery_pages"
+                 class="s-input w-24" min="1" max="50" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Auto-Delete Skipped / Failed</div>
+          <div class="field-hint">Remove projects that have been Skipped or Failed for the time
+            below, counted from when they entered that status. A project with any trace of a
+            bid is never deleted; removed ones are kept in an archive and never fetched again.</div>
+        </div>
+        <div class="field-control">
+          <select name="project_cleanup_enabled" id="field-project_cleanup_enabled" class="s-input w-40">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Delete After (hours)</div>
+          <div class="field-hint">Default 24 (1–720). The cleanup runs every 15 minutes.</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_cleanup_after_hours" id="field-project_cleanup_after_hours"
+                 class="s-input w-24" min="1" max="720" step="1">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
        SECTION 7 — Freelancer Profile
        ══════════════════════════════════════════════════════════════════════════ -->
   <div class="s-card">
@@ -1320,6 +1449,8 @@ const PLAIN_FIELDS = [
   'project_min_fixed_budget', 'project_min_hourly_rate',
   'project_daily_bid_limit', 'project_auto_analyze',
   'project_require_approval', 'project_max_revisions',
+  'project_discovery_enabled', 'project_discovery_time', 'project_discovery_timezone',
+  'project_discovery_pages', 'project_cleanup_enabled', 'project_cleanup_after_hours',
   // Freelancer profile
   'profile_title', 'profile_summary',
 ];
@@ -1433,6 +1564,7 @@ async function saveSettings() {
 
     if (d.success) {
       showToast(d.message || 'Settings saved.', 'success');
+      loadDiscoveryStatus();
       status.textContent = '✓ Saved';
       status.className   = 'text-sm text-success';
 
@@ -1540,6 +1672,97 @@ async function refreshProfileConnection() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Daily discovery status
+// ─────────────────────────────────────────────────────────────────────────────
+const RUN_STATUS = {
+  completed: ['Completed', 'bg-success/15 text-success'], running: ['Running', 'bg-accent/15 text-accent'],
+  queued: ['Queued', 'bg-accent/15 text-accent'], failed: ['Failed', 'bg-danger/15 text-danger'],
+  interrupted: ['Interrupted', 'bg-warning/15 text-warning'], skipped: ['Skipped', 'bg-warning/15 text-warning'],
+  stopped: ['Stopped', 'bg-white/5 text-muted'],
+};
+const TRIGGERS = { scheduled: 'scheduled', catch_up: 'caught up late', manual: 'started by hand' };
+
+function discoveryRunLine(run) {
+  if (!run) return '<span class="text-muted">No run yet.</span>';
+  const [label, cls] = RUN_STATUS[run.status] || [run.status, 'bg-white/5 text-muted'];
+  const st = run.stats || {};
+  const when = (run.finished_at || run.started_at || run.scheduled_for || {}).local || '';
+  const bits = [];
+  if (run.pages_scanned != null) bits.push(`${run.pages_scanned}/${run.page_limit} page(s) read`);
+  if (st.in_window != null) bits.push(`${st.in_window} published that day in those pages`
+                                      + (run.coverage === 'partial' ? ' (partial — page limit reached)' :
+                                         run.coverage === 'complete' ? ' (whole day covered)' : ''));
+  if (st.eligible != null) bits.push(`${st.eligible} eligible`);
+  if (st.analysis_queued != null) bits.push(`${st.analysis_queued} sent to analysis`);
+  if (st.skipped) bits.push(`${st.skipped} skipped`);
+  return `<span class="disc-pill ${cls}">${esc(label)}</span>
+          <span class="text-primary">${esc(run.target_date || '')}</span>
+          <span class="text-muted">· ${esc(TRIGGERS[run.trigger] || run.trigger)} · ${esc(when)}</span>
+          ${bits.length ? `<div class="text-xs text-muted mt-1">${esc(bits.join(' · '))}</div>` : ''}
+          ${run.error ? `<div class="text-xs text-warning mt-1">${esc(run.error)}</div>` : ''}
+          ${st.analysis_note ? `<div class="text-xs text-muted mt-1">${esc(st.analysis_note)}</div>` : ''}`;
+}
+
+function renderDiscoveryStatus(d) {
+  const box = document.getElementById('discovery-status');
+  if (!box) return;
+  const sch = d.scheduler || {};
+  const health = sch.state === 'active'
+    ? `<span class="w-2 h-2 rounded-full bg-success pulse"></span><span class="text-success">Scheduler running</span>
+       <span class="text-[11px] text-muted">heartbeat ${sch.age_seconds}s ago</span>`
+    : sch.state === 'not_running'
+      ? `<span class="w-2 h-2 rounded-full bg-danger"></span><span class="text-danger">Scheduler not running</span>
+         <span class="text-[11px] text-muted">last heartbeat ${Math.round((sch.age_seconds || 0) / 60)} min ago — start the <code>celery_beat</code> service</span>`
+      : `<span class="w-2 h-2 rounded-full bg-warning"></span><span class="text-warning">Scheduler status unknown</span>
+         <span class="text-[11px] text-muted">no heartbeat found — is the <code>celery_beat</code> service deployed?</span>`;
+  const next = d.enabled && d.next_run
+    ? `<span class="text-primary font-medium">${esc(d.next_run.local)}</span>`
+    : '<span class="text-warning">Daily discovery is disabled</span>';
+  const errors = (d.config_errors || []).map(e =>
+    `<div class="mt-2 px-3 py-2 rounded-lg text-xs bg-warning/10 border border-warning/25 text-warning">${esc(e)}</div>`).join('');
+  const missed = d.missed ? `<div class="mt-2 px-3 py-2 rounded-lg text-xs bg-danger/10 border border-danger/25 text-danger">
+      The run due ${esc(d.missed.due)} was missed (the scheduler was down for too long to catch up).</div>` : '';
+  box.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap">${health}</div>
+    <div class="grid sm:grid-cols-2 gap-3 mt-3 text-xs">
+      <div><p class="text-muted uppercase tracking-wider text-[10px] mb-1">Next run</p>${next}
+        <div class="text-muted mt-0.5">${esc(d.timezone)} (UTC${esc((d.utc_offset || '').replace(/(\d{2})(\d{2})$/, '$1:$2'))}) · now ${esc(d.now_local || '')} · ${esc(d.tz_database || '')}</div></div>
+      <div><p class="text-muted uppercase tracking-wider text-[10px] mb-1">Last successful run</p>
+        ${d.last_success ? discoveryRunLine(d.last_success) : '<span class="text-muted">None yet.</span>'}</div>
+    </div>
+    <div class="mt-3 text-xs"><p class="text-muted uppercase tracking-wider text-[10px] mb-1">Last run</p>
+      ${discoveryRunLine(d.last_run)}</div>
+    ${errors}${missed}`;
+}
+
+async function loadDiscoveryStatus() {
+  try {
+    const r = await fetch('/api/projects/discovery');
+    if (r.ok) renderDiscoveryStatus(await r.json());
+  } catch (err) { /* keep the last state */ }
+}
+
+async function runDiscoveryNow() {
+  const ok = await showConfirmModal('Run today\'s discovery now?',
+    'Reads the projects published today (same pages, filters and timezone as the schedule) ' +
+    'and sends the eligible ones to AI analysis. Nothing is submitted.', 'Run now');
+  if (!ok) return;
+  const btn = document.getElementById('discovery-run-btn');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/projects/discovery/run', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(d.message || 'Discovery started.', 'success');
+    setTimeout(loadDiscoveryStatus, 1500);
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Helper
 // ─────────────────────────────────────────────────────────────────────────────
 function esc(str) {
@@ -1554,5 +1777,10 @@ function esc(str) {
 lucide.createIcons();
 loadSettings();
 loadProfileConnection();
+loadDiscoveryStatus();
+setInterval(loadDiscoveryStatus, 30_000);
+window.addEventListener('task_complete', e => {
+  if ((e.detail || {}).type === 'project_discovery') loadDiscoveryStatus();
+});
 </script>
 {% endblock %}
