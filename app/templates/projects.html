@@ -1,0 +1,1584 @@
+{% extends "base.html" %}
+{% block title %}Projects — ContestBot{% endblock %}
+{% block page_title %}Projects &amp; Proposals{% endblock %}
+
+{% block head %}
+<style>
+  .stat-card { transition: transform .15s ease, box-shadow .15s ease; }
+  .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+
+  @keyframes shimmer {
+    from { background-position: -600px 0; }
+    to   { background-position:  600px 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, #12141f 25%, #1e2030 50%, #12141f 75%);
+    background-size: 600px 100%;
+    animation: shimmer 1.4s infinite;
+    border-radius: 6px;
+  }
+
+  #detail-panel {
+    transform: translateX(100%);
+    transition: transform .25s cubic-bezier(.4,0,.2,1);
+    scrollbar-width: thin; scrollbar-color: #1e2030 transparent;
+  }
+  #detail-panel.open { transform: translateX(0); }
+
+  /* Status badge colours — project lifecycle */
+  .badge-discovered   { background: rgba(100,116,139,.15); color:#94a3b8; }
+  .badge-fetching     { background: rgba(79,110,247,.15);  color:#4f6ef7; }
+  .badge-fetched      { background: rgba(79,110,247,.15);  color:#4f6ef7; }
+  .badge-analyzing    { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .badge-skipped      { background: rgba(100,116,139,.15); color:#64748b; }
+  .badge-needs_review { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .badge-draft_ready  { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .badge-approved     { background: rgba(34,197,94,.15);   color:#22c55e; }
+  .badge-submitting   { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .badge-submitted    { background: rgba(34,197,94,.2);    color:#4ade80; }
+  .badge-failed       { background: rgba(239,68,68,.15);   color:#ef4444; }
+  .badge-closed       { background: rgba(100,116,139,.15); color:#64748b; }
+
+  .ws-high { background: rgba(34,197,94,.15);   color:#22c55e; }
+  .ws-mid  { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .ws-low  { background: rgba(239,68,68,.15);   color:#ef4444; }
+  .ws-none { background: rgba(100,116,139,.10); color:#64748b; }
+
+  #project-tbody tr:hover { background: rgba(255,255,255,.025); cursor: pointer; }
+  #project-tbody tr.is-open { background: rgba(79,110,247,.08); }
+
+  #bulk-bar {
+    max-height: 0; overflow: hidden;
+    transition: max-height .2s ease, margin-bottom .2s ease;
+    margin-bottom: 0;
+  }
+  #bulk-bar.open { max-height: 80px; margin-bottom: 1rem; }
+
+  .row-menu {
+    position: absolute; right: 0; top: calc(100% + 4px);
+    min-width: 230px;
+    background: #0a0c14; border: 1px solid #1e2030; border-radius: 8px;
+    padding: 4px; box-shadow: 0 8px 24px rgba(0,0,0,.5); z-index: 30;
+  }
+  .row-menu button, .row-menu .menu-item {
+    width: 100%; text-align: left; padding: 6px 10px; border-radius: 6px;
+    font-size: .75rem; color: #e2e8f0; background: transparent; border: none;
+    cursor: pointer; display: flex; align-items: center; gap: .5rem;
+  }
+  .row-menu button:hover { background: rgba(79,110,247,.12); color: #4f6ef7; }
+  .row-menu .menu-item.danger:hover { background: rgba(239,68,68,.12); color: #ef4444; }
+  .row-menu .menu-sep { height: 1px; background: #1e2030; margin: 4px 0; }
+
+  /* Status tabs */
+  .tab-btn {
+    display: inline-flex; align-items: center; gap: .4rem; white-space: nowrap;
+    padding: .4rem .7rem; border-radius: 8px; font-size: .75rem; font-weight: 500;
+    color: #64748b; border: 1px solid transparent; transition: color .15s, background .15s;
+  }
+  .tab-btn:hover { color: #e2e8f0; background: rgba(255,255,255,.03); }
+  .tab-btn.active { color: #4f6ef7; background: rgba(79,110,247,.12); border-color: rgba(79,110,247,.3); }
+  .tab-count { font-size: .65rem; padding: 0 .35rem; border-radius: 99px; background: rgba(100,116,139,.2); }
+  .tab-btn.active .tab-count { background: rgba(79,110,247,.25); }
+
+  /* Progress bar under the action buttons */
+  #work-progress { display: none; }
+  #work-progress.active { display: block; }
+  #work-progress-bar {
+    height: 6px; border-radius: 99px; background: #4f6ef7;
+    transition: width .4s ease; width: 0%;
+  }
+  #work-progress-bar.indeterminate {
+    width: 35% !important;
+    animation: slide-bar 1.3s ease-in-out infinite alternate;
+  }
+  @keyframes slide-bar { from { margin-left: 0; } to { margin-left: 65%; } }
+
+  /* Detail panel proposal editor */
+  #panel-proposal-text {
+    width: 100%; min-height: 340px; resize: vertical;
+    background: #0a0c14; border: 1px solid #1e2030; border-radius: 8px;
+    padding: 10px 12px; font-size: .84rem; line-height: 1.55; color: #e2e8f0;
+  }
+  #panel-proposal-text:focus { outline: none; border-color: #4f6ef7; }
+  .factor-bar-track { background: #1e2030; border-radius: 99px; height: 5px; }
+  .factor-bar { height: 5px; border-radius: 99px; }
+  .panel-section-title { font-size: .7rem; color: #64748b; text-transform: uppercase; letter-spacing: .05em; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Stat cards ──────────────────────────────────────────────────────────── -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-5">
+
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Projects</p>
+        <p id="stat-total" class="text-3xl font-bold text-primary">—</p>
+        <p id="stat-total-note" class="text-[10px] text-muted mt-0.5">&nbsp;</p>
+      </div>
+      <span class="p-2 bg-accent/10 rounded-lg">
+        <i data-lucide="briefcase" class="w-5 h-5 text-accent"></i>
+      </span>
+    </div>
+  </div>
+
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">To Analyze</p>
+        <p id="stat-analyze" class="text-3xl font-bold text-primary">—</p>
+        <p id="stat-analyze-note" class="text-[10px] text-muted mt-0.5">passed your filters</p>
+      </div>
+      <span class="p-2 bg-accent/10 rounded-lg">
+        <i data-lucide="brain" class="w-5 h-5 text-accent"></i>
+      </span>
+    </div>
+  </div>
+
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Proposals Ready</p>
+        <p id="stat-approved" class="text-3xl font-bold text-success">—</p>
+        <p id="stat-approved-note" class="text-[10px] text-muted mt-0.5">ready to submit</p>
+      </div>
+      <span class="p-2 bg-success/10 rounded-lg">
+        <i data-lucide="check-check" class="w-5 h-5 text-success"></i>
+      </span>
+    </div>
+  </div>
+
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Bids Submitted</p>
+        <p id="stat-submitted" class="text-3xl font-bold text-primary">—</p>
+        <p class="text-[10px] text-muted mt-0.5">verified on Freelancer</p>
+      </div>
+      <span class="p-2 bg-accent/10 rounded-lg">
+        <i data-lucide="send" class="w-5 h-5 text-accent"></i>
+      </span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Action buttons ──────────────────────────────────────────────────────── -->
+<div class="flex flex-wrap items-center gap-3 mb-3">
+
+  <div class="flex items-stretch">
+    <button id="btn-project_fetch"
+            onclick="triggerAction('project_fetch')"
+            class="action-btn flex items-center gap-2 px-4 py-2.5 rounded-lg
+                   bg-surface border border-border text-sm font-medium text-primary
+                   hover:border-accent hover:text-accent transition-all duration-150
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      <span class="btn-spinner hidden">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+      </span>
+      <span class="btn-icon"><i data-lucide="search" class="w-4 h-4"></i></span>
+      <span class="btn-label">Fetch Projects</span>
+    </button>
+    <button id="btn-project_fetch-stop" onclick="stopAction('project_fetch')"
+            title="Stop fetching"
+            class="stop-btn hidden ml-1 px-2.5 py-2.5 rounded-lg border border-danger/40
+                   text-danger hover:bg-danger/10 transition-colors">
+      <i data-lucide="square" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <div class="flex items-stretch">
+    <button id="btn-project_analyze"
+            onclick="triggerAction('project_analyze')"
+            class="action-btn flex items-center gap-2 px-4 py-2.5 rounded-lg
+                   bg-accent text-white text-sm font-medium
+                   hover:bg-accent/90 transition-all duration-150
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      <span class="btn-spinner hidden">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+      </span>
+      <span class="btn-icon"><i data-lucide="brain" class="w-4 h-4"></i></span>
+      <span class="btn-label">Analyze Projects</span>
+    </button>
+    <button id="btn-project_analyze-stop" onclick="stopAction('project_analyze')"
+            title="Stop analysis"
+            class="stop-btn hidden ml-1 px-2.5 py-2.5 rounded-lg border border-danger/40
+                   text-danger hover:bg-danger/10 transition-colors">
+      <i data-lucide="square" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <div class="flex items-stretch">
+    <button id="btn-project_submit"
+            onclick="triggerAction('project_submit')"
+            class="action-btn flex items-center gap-2 px-4 py-2.5 rounded-lg
+                   bg-surface border border-border text-sm font-medium text-primary
+                   hover:border-success hover:text-success transition-all duration-150
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      <span class="btn-spinner hidden">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+      </span>
+      <span class="btn-icon"><i data-lucide="send" class="w-4 h-4"></i></span>
+      <span class="btn-label">Submit Proposals</span>
+    </button>
+    <button id="btn-project_submit-stop" onclick="stopAction('project_submit')"
+            title="Stop submitting"
+            class="stop-btn hidden ml-1 px-2.5 py-2.5 rounded-lg border border-danger/40
+                   text-danger hover:bg-danger/10 transition-colors">
+      <i data-lucide="square" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <a id="profile-chip" href="/settings" class="ml-auto hidden items-center gap-1.5 text-xs text-muted hover:text-primary transition-colors"></a>
+</div>
+
+<!-- ── Live progress ───────────────────────────────────────────────────────── -->
+<div id="work-progress" class="mb-3">
+  <div class="flex items-center justify-between text-xs text-muted mb-1">
+    <span id="work-progress-label">Working…</span>
+    <span id="work-progress-count"></span>
+  </div>
+  <div class="factor-bar-track w-full overflow-hidden">
+    <div id="work-progress-bar"></div>
+  </div>
+</div>
+
+<!-- ── Last run report ─────────────────────────────────────────────────────── -->
+<div id="run-report" class="hidden mb-4 px-4 py-2.5 rounded-xl border text-xs"></div>
+
+<!-- ── Bulk action bar ─────────────────────────────────────────────────────── -->
+<div id="bulk-bar"
+     class="rounded-xl border border-accent/30 bg-accent/5 flex items-center gap-3 px-4">
+  <span class="flex items-center gap-2 text-sm text-primary py-3">
+    <i data-lucide="check-square" class="w-4 h-4 text-accent"></i>
+    <span id="selectedCount" class="font-semibold">0</span>
+    <span class="text-muted">projects selected</span>
+  </span>
+  <div class="flex-1"></div>
+  <button onclick="deleteProjects(getSelectedIds())"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                 border border-danger/40 text-danger text-sm hover:bg-danger/10
+                 transition-colors">
+    <i data-lucide="trash-2" class="w-4 h-4"></i>
+    Delete Selected
+  </button>
+  <button onclick="clearSelection()" title="Clear selection"
+          class="p-1.5 rounded-lg text-muted hover:text-primary hover:bg-white/5
+                 transition-colors">
+    <i data-lucide="x" class="w-4 h-4"></i>
+  </button>
+</div>
+
+<!-- ── Projects table ──────────────────────────────────────────────────────── -->
+<div class="bg-surface border border-border rounded-xl overflow-hidden">
+
+  <div id="status-tabs" class="flex items-center gap-1 px-3 pt-3 overflow-x-auto"></div>
+
+  <div class="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-border">
+    <div class="relative flex-1 min-w-48">
+      <i data-lucide="search"
+         class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none"></i>
+      <input id="search-input" type="text" placeholder="Search title, skills or brief…"
+             oninput="onFilterChange()"
+             class="w-full pl-9 pr-3 py-2 rounded-lg border border-border text-sm
+                    bg-bg text-primary placeholder:text-muted focus:outline-none
+                    focus:border-accent focus:ring-2 focus:ring-accent/20">
+    </div>
+
+    <select id="sort-select" onchange="onSortChange()" title="Sort order"
+            class="px-3 py-2 rounded-lg border border-border text-sm
+                   bg-bg text-primary focus:outline-none focus:border-accent
+                   focus:ring-2 focus:ring-accent/20">
+      <option value="best">Best opportunity</option>
+      <option value="newest">Newest first</option>
+      <option value="bids">Fewest bids</option>
+    </select>
+
+    <span id="project-count" class="text-xs text-muted ml-auto whitespace-nowrap"></span>
+  </div>
+
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-xs text-muted uppercase tracking-wider border-b border-border">
+          <th class="px-3 py-3 text-center font-medium w-8">
+            <input type="checkbox" id="selectAll" onclick="onSelectAllToggle(this)"
+                   class="align-middle accent-accent">
+          </th>
+          <th class="px-4 py-3 text-left font-medium">Project</th>
+          <th class="px-4 py-3 text-right font-medium">Budget</th>
+          <th class="px-4 py-3 text-right font-medium">Bids</th>
+          <th class="px-4 py-3 text-left font-medium">Client</th>
+          <th class="px-4 py-3 text-right font-medium">Posted</th>
+          <th class="px-4 py-3 text-center font-medium">Score</th>
+          <th class="px-4 py-3 text-right font-medium">Our Bid</th>
+          <th class="px-4 py-3 text-center font-medium">Status</th>
+          <th class="px-4 py-3 text-center font-medium w-20"></th>
+        </tr>
+      </thead>
+      <tbody id="project-tbody">
+        <tr class="border-b border-border/50">
+          <td colspan="10" class="px-4 py-3"><div class="skeleton h-4 w-full rounded"></div></td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td colspan="10" class="px-4 py-3"><div class="skeleton h-4 w-full rounded"></div></td>
+        </tr>
+        <tr class="border-b border-border/50">
+          <td colspan="10" class="px-4 py-3"><div class="skeleton h-4 w-2/3 rounded"></div></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div id="pagination"
+       class="flex items-center justify-between px-4 py-3 border-t border-border text-xs text-muted hidden">
+    <button id="page-prev" onclick="changePage(-1)"
+            class="flex items-center gap-1 px-2 py-1 rounded hover:text-primary
+                   disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+      <i data-lucide="chevron-left" class="w-3 h-3"></i> Prev
+    </button>
+    <span id="page-info"></span>
+    <button id="page-next" onclick="changePage(1)"
+            class="flex items-center gap-1 px-2 py-1 rounded hover:text-primary
+                   disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+      Next <i data-lucide="chevron-right" class="w-3 h-3"></i>
+    </button>
+  </div>
+
+</div>
+
+<!-- ── Overlay ─────────────────────────────────────────────────────────────── -->
+<div id="panel-overlay" onclick="closeDetail()"
+     class="fixed inset-0 bg-black/40 z-30 hidden backdrop-blur-sm"></div>
+
+<!-- ── Project detail slide panel ──────────────────────────────────────────── -->
+<aside id="detail-panel"
+       class="fixed top-0 right-0 h-screen w-full max-w-[600px] z-40
+              bg-surface border-l border-border flex flex-col">
+
+  <div class="flex items-start justify-between gap-3 px-5 py-4 border-b border-border flex-shrink-0">
+    <div class="min-w-0">
+      <h2 id="panel-title" class="text-base font-semibold text-primary">Loading…</h2>
+      <div class="flex items-center gap-2 mt-1 flex-wrap">
+        <span id="panel-status" class="px-2 py-0.5 rounded-full text-xs font-medium">—</span>
+        <span id="panel-posted" class="text-xs text-muted"></span>
+      </div>
+    </div>
+    <div class="flex items-center gap-0.5 flex-shrink-0">
+      <button id="panel-prev" onclick="stepDetail(-1)" title="Previous project (←)"
+              class="p-1.5 rounded-lg hover:bg-white/5 text-muted hover:text-primary transition-colors disabled:opacity-30">
+        <i data-lucide="chevron-left" class="w-4 h-4"></i>
+      </button>
+      <button id="panel-next" onclick="stepDetail(1)" title="Next project (→)"
+              class="p-1.5 rounded-lg hover:bg-white/5 text-muted hover:text-primary transition-colors disabled:opacity-30">
+        <i data-lucide="chevron-right" class="w-4 h-4"></i>
+      </button>
+      <button onclick="closeDetail()" title="Close (Esc)"
+              class="p-1.5 rounded-lg hover:bg-white/5 text-muted hover:text-primary transition-colors">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+  </div>
+
+  <div id="panel-body" class="flex-1 overflow-y-auto px-5 py-4 space-y-5">
+
+    <div id="panel-warning" class="hidden px-3 py-2 rounded-lg text-xs
+         bg-warning/10 border border-warning/25 text-warning"></div>
+
+    <!-- Meta row -->
+    <div class="grid grid-cols-4 gap-2 text-center">
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p class="text-sm font-bold text-primary" id="panel-budget">—</p>
+        <p class="text-[10px] text-muted mt-0.5">Budget</p>
+      </div>
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p class="text-sm font-bold text-primary" id="panel-avgbid">—</p>
+        <p class="text-[10px] text-muted mt-0.5">Avg Bid</p>
+      </div>
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p class="text-sm font-bold text-primary" id="panel-bids">—</p>
+        <p class="text-[10px] text-muted mt-0.5">Bids</p>
+      </div>
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p id="panel-score" class="text-sm font-bold">—</p>
+        <p class="text-[10px] text-muted mt-0.5">Score</p>
+      </div>
+    </div>
+
+    <!-- Waiting for the AI -->
+    <div id="panel-busy" class="hidden flex items-center gap-2 px-3 py-2 rounded-lg text-xs
+         bg-accent/10 border border-accent/25 text-accent">
+      <i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i>
+      <span id="panel-busy-text">Writing the proposal…</span>
+    </div>
+
+    <!-- Proposal editor -->
+    <div id="panel-proposal-wrap" class="hidden space-y-2.5">
+      <div class="flex items-center justify-between gap-2">
+        <h3 class="panel-section-title">Proposal</h3>
+        <div class="flex items-center gap-2">
+          <span id="panel-proposal-meta" class="text-[10px] text-muted"></span>
+          <button onclick="copyProposal()" title="Copy the text"
+                  class="p-1 rounded text-muted hover:text-primary transition-colors">
+            <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+      <textarea id="panel-proposal-text" spellcheck="true" oninput="onProposalInput()"></textarea>
+      <div class="flex items-center gap-3 flex-wrap">
+        <label class="text-xs text-muted flex items-center gap-1.5">
+          Bid
+          <input id="panel-bid-amount" type="number" min="1" step="1" oninput="onProposalInput()"
+                 class="w-24 px-2 py-1.5 rounded-lg border border-border bg-bg text-primary text-sm">
+          <span id="panel-bid-currency" class="text-muted">USD</span>
+        </label>
+        <label class="text-xs text-muted flex items-center gap-1.5">
+          Delivery
+          <input id="panel-bid-days" type="number" min="1" max="90" step="1" oninput="onProposalInput()"
+                 class="w-20 px-2 py-1.5 rounded-lg border border-border bg-bg text-primary text-sm">
+          days
+        </label>
+        <span id="panel-recommendation" class="text-[10px] text-muted"></span>
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button id="panel-submit-btn" onclick="submitProject()"
+                class="hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                       bg-success text-white text-sm font-medium
+                       hover:bg-success/85 transition-colors">
+          <i data-lucide="send" class="w-3.5 h-3.5"></i> Submit Bid
+        </button>
+        <button id="panel-approve-btn" onclick="approveProject()"
+                class="hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                       bg-success/15 border border-success/30 text-success text-sm
+                       hover:bg-success/25 transition-colors">
+          <i data-lucide="check" class="w-3.5 h-3.5"></i> Approve
+        </button>
+        <button id="panel-save-btn" onclick="saveProposal()"
+                class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border
+                       text-sm text-muted hover:text-primary hover:border-primary/50 transition-colors
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+          <i data-lucide="save" class="w-3.5 h-3.5"></i> <span id="panel-save-label">Save Edits</span>
+        </button>
+        <button id="panel-regenerate-btn" onclick="regenerateProposal()"
+                title="Write a new proposal from the same analysis"
+                class="hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-accent/40
+                       text-accent text-sm hover:bg-accent/10 transition-colors">
+          <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Rewrite
+        </button>
+        <button id="panel-reject-btn" onclick="rejectProject()"
+                class="hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                       border border-danger/40 text-danger text-sm
+                       hover:bg-danger/10 transition-colors ml-auto">
+          <i data-lucide="x" class="w-3.5 h-3.5"></i> Reject
+        </button>
+      </div>
+      <div id="panel-pricing-reasons" class="text-[11px] text-muted space-y-0.5"></div>
+      <div id="panel-review" class="text-xs text-muted"></div>
+      <div id="panel-evidence" class="hidden text-xs px-3 py-2 rounded-lg
+           bg-success/10 border border-success/25 text-success"></div>
+    </div>
+
+    <!-- Description -->
+    <div>
+      <h3 class="panel-section-title mb-2">Client's brief</h3>
+      <p id="panel-desc" class="text-sm text-primary leading-relaxed max-h-64 overflow-y-auto
+                                whitespace-pre-line pr-1">—</p>
+    </div>
+
+    <!-- Skills -->
+    <div id="panel-skills-wrap" class="hidden">
+      <h3 class="panel-section-title mb-2">Skills</h3>
+      <div id="panel-skills" class="flex flex-wrap gap-1.5"></div>
+    </div>
+
+    <!-- Client -->
+    <div>
+      <h3 class="panel-section-title mb-2">Client</h3>
+      <div id="panel-client" class="flex flex-wrap gap-1.5 text-xs"></div>
+    </div>
+
+    <!-- Attachments -->
+    <div id="panel-attachments-wrap" class="hidden">
+      <h3 class="panel-section-title mb-2">Attachments</h3>
+      <div id="panel-attachments" class="space-y-1 text-xs"></div>
+    </div>
+
+    <!-- Analysis -->
+    <div id="panel-analysis-wrap" class="hidden space-y-3">
+      <h3 class="panel-section-title">Analysis</h3>
+      <p id="panel-goal" class="text-sm text-primary leading-snug"></p>
+      <div id="panel-factors" class="space-y-1.5"></div>
+      <div id="panel-analysis-lists" class="space-y-2 text-xs"></div>
+    </div>
+
+    <!-- Logs -->
+    <div id="panel-logs-wrap">
+      <h3 class="panel-section-title mb-2">Recent Activity</h3>
+      <div id="panel-logs" class="space-y-1 max-h-48 overflow-y-auto pr-1"></div>
+    </div>
+
+  </div>
+
+  <!-- Panel footer -->
+  <div class="px-5 py-3 border-t border-border flex-shrink-0 flex gap-2">
+    <a id="panel-open-link" href="#" target="_blank" rel="noopener"
+       class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+              border border-border text-sm text-muted hover:text-primary
+              hover:border-primary/50 transition-colors">
+      <i data-lucide="external-link" class="w-4 h-4"></i> Open on Freelancer
+    </a>
+    <button id="panel-analyze-btn" onclick="analyzeProject()"
+            class="flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                   border border-accent/40 text-accent text-sm
+                   hover:bg-accent/10 transition-colors">
+      <i data-lucide="brain" class="w-4 h-4"></i> <span id="panel-analyze-label">Analyze</span>
+    </button>
+  </div>
+
+</aside>
+
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+let _currentPage = 1;
+let _totalPages  = 1;
+let _rows = [];                 // the page currently on screen
+let _activeProjectId = null;
+let _activeProject   = null;
+let _proposalDirty   = false;   // the operator is typing — don't overwrite it
+const _selected = new Set();    // survives the table re-rendering
+let _loadSeq = 0;               // a slow old response must not replace a newer one
+let _lastTableJson = '';
+let _stats = null;
+
+const STATUS_LABELS = {
+  discovered: 'Discovered', fetching: 'Fetching', fetched: 'To analyze',
+  analyzing: 'Analyzing', skipped: 'Skipped', needs_review: 'Needs review',
+  draft_ready: 'Needs review', approved: 'Ready', submitting: 'Submitting',
+  submitted: 'Submitted', failed: 'Failed', closed: 'Closed',
+};
+const STATUS_TABS = [
+  { key: 'all',       label: 'All',             statuses: 'all' },
+  { key: 'approved',  label: 'Ready to submit', statuses: 'approved' },
+  { key: 'review',    label: 'Needs review',    statuses: 'draft_ready,needs_review' },
+  { key: 'fetched',   label: 'To analyze',      statuses: 'fetched' },
+  { key: 'active',    label: 'In progress',     statuses: 'analyzing,submitting' },
+  { key: 'submitted', label: 'Submitted',       statuses: 'submitted' },
+  { key: 'skipped',   label: 'Skipped',         statuses: 'skipped' },
+  { key: 'closed',    label: 'Closed',          statuses: 'closed' },
+  { key: 'failed',    label: 'Failed',          statuses: 'failed' },
+];
+function _remember(key, value) { try { localStorage.setItem(key, value); } catch (e) {} }
+function _recall(key, fallback) { try { return localStorage.getItem(key) || fallback; } catch (e) { return fallback; } }
+let _activeTab = _recall('projects_tab', 'all');
+
+const CURRENCY_SYMBOLS = { USD:'$', EUR:'€', GBP:'£', INR:'₹', AUD:'A$', CAD:'C$', NZD:'NZ$', SGD:'S$', HKD:'HK$' };
+function money(v, cur) {
+  if (v == null) return '—';
+  const sym = CURRENCY_SYMBOLS[cur] || ((cur || '') + ' ');
+  return `${sym}${Number(v).toLocaleString(undefined, {maximumFractionDigits: 0})}`;
+}
+function budgetText(p) {
+  const unit = p.project_type === 'hourly' ? '/h' : '';
+  if (p.budget_min != null && p.budget_max != null)
+    return `${money(p.budget_min, p.currency)}–${Number(p.budget_max).toLocaleString()}${unit}`;
+  if (p.budget_min != null) return `${money(p.budget_min, p.currency)}+${unit}`;
+  return '—';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats + button states
+// ─────────────────────────────────────────────────────────────────────────────
+const BTN_MAP = {
+  project_fetch:   { id: 'btn-project_fetch',   flag: 'project_fetch_running' },
+  project_analyze: { id: 'btn-project_analyze', flag: 'project_analyze_running' },
+  project_submit:  { id: 'btn-project_submit',  flag: 'project_submit_running' },
+};
+
+async function refreshProjectStats() {
+  try {
+    const r = await fetch('/api/projects/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    _stats = d;
+    const by = d.by_status || {};
+    setText('stat-total', d.total ?? '—');
+    setText('stat-total-note', `${by.skipped || 0} skipped · ${by.closed || 0} closed`);
+    setText('stat-analyze', (by.fetched || 0));
+    setText('stat-analyze-note', d.analyze_queue ? `${d.analyze_queue} in the queue now` : 'passed your filters');
+    setText('stat-approved', d.actionable.approved ?? '—');
+    const review = (by.draft_ready || 0) + (by.needs_review || 0);
+    setText('stat-approved-note', review ? `+ ${review} need your review` : 'ready to submit');
+    setText('stat-submitted', d.actionable.submitted ?? '—');
+    syncButtonStates(d);
+    renderTabs(by, d.total);
+    renderRunReport(d);
+    renderProfileChip(d.profile || {});
+    schedulePoll(d.bot_status || {});
+  } catch (e) { /* transient */ }
+}
+
+function syncButtonStates(d) {
+  const bot = d.bot_status || {};
+  Object.values(BTN_MAP).forEach(({ id, flag }) => {
+    const btn  = document.getElementById(id);
+    const stop = document.getElementById(`${id}-stop`);
+    if (!btn) return;
+    const running = !!bot[flag];
+    btn.disabled = running;
+    btn.querySelector('.btn-spinner').classList.toggle('hidden', !running);
+    btn.querySelector('.btn-icon').classList.toggle('hidden', running);
+    if (stop) stop.classList.toggle('hidden', !running);
+  });
+  const by = d.by_status || {};
+  document.getElementById('btn-project_analyze').querySelector('.btn-label').textContent =
+    bot.project_analyze_running ? 'Analyzing…' : (by.fetched ? `Analyze Projects (${by.fetched})` : 'Analyze Projects');
+  document.getElementById('btn-project_submit').querySelector('.btn-label').textContent =
+    bot.project_submit_running ? 'Submitting…' : (by.approved ? `Submit Proposals (${by.approved})` : 'Submit Proposals');
+  document.getElementById('btn-project_fetch').querySelector('.btn-label').textContent =
+    bot.project_fetch_running ? 'Fetching…' : 'Fetch Projects';
+
+  if (bot.project_fetch_running) {
+    showProgress(_lastProgressLabel || 'Reading projects from Freelancer…', null);
+  } else if (bot.project_analyze_running) {
+    const left = d.analyze_queue || 1;
+    showProgress(`Analyzing projects and writing proposals — ${left} left`, null);
+  } else {
+    hideProgress();
+  }
+}
+
+// Poll quickly only while something is running: it keeps the page truthful even
+// if the live socket drops, without a steady stream of requests when idle.
+let _pollTimer = null;
+function schedulePoll(bot) {
+  clearTimeout(_pollTimer);
+  const busy = bot.project_fetch_running || bot.project_analyze_running || bot.project_submit_running;
+  _pollTimer = setTimeout(() => {
+    refreshProjectStats();
+    if (busy) scheduleTableRefresh();
+  }, busy ? 5000 : 30000);
+}
+
+function renderProfileChip(profile) {
+  const chip = document.getElementById('profile-chip');
+  chip.classList.remove('hidden');
+  chip.classList.add('flex');
+  if (profile.connected && !profile.error) {
+    setHtml(chip, `<span class="w-1.5 h-1.5 rounded-full bg-success"></span>
+      Writing from <span class="text-primary">@${esc(profile.username)}</span>'s Freelancer profile`);
+    chip.title = 'Proposals only claim what this profile says';
+  } else if (profile.connected) {
+    setHtml(chip, `<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+      Using a saved copy of <span class="text-primary">@${esc(profile.username)}</span>'s profile`);
+    chip.title = profile.error || '';
+  } else {
+    setHtml(chip, `<span class="w-1.5 h-1.5 rounded-full bg-warning"></span>
+      <span class="text-warning">Freelancer profile not connected</span>`);
+    chip.title = profile.error || 'Proposals will make no claims about you until it is connected';
+  }
+}
+
+function renderRunReport(d) {
+  const box = document.getElementById('run-report');
+  const run = d.last_fetch;
+  if (!run || !run.started_at || (d.bot_status || {}).project_fetch_running) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const when = timeAgo(run.finished_at || run.started_at);
+  if (run.error) {
+    const isSession = /session|cookies/i.test(run.error);
+    box.className = 'mb-4 px-4 py-2.5 rounded-xl border text-xs bg-danger/10 border-danger/25 text-danger';
+    setHtml(box, `<div class="flex items-center gap-3 flex-wrap">
+        <span class="flex-1 min-w-48"><b>Last fetch didn't finish</b> (${esc(when)}): ${esc(run.error)}</span>
+        ${isSession
+          ? `<a href="/settings" class="underline whitespace-nowrap">Upload fresh cookies →</a>`
+          : `<button onclick="triggerAction('project_fetch')" class="underline whitespace-nowrap">Try again</button>`}
+      </div>`);
+    return;
+  }
+  const reasons = Object.entries(run.skip_reasons || {});
+  const reasonText = reasons.map(([label, n]) =>
+    `${n} ${/^[A-Z]{2}/.test(label) ? label : label.charAt(0).toLowerCase() + label.slice(1)}`).join(' · ');
+  const available = run.available > run.scanned
+    ? `<span class="text-muted"> Your search has ${Number(run.available).toLocaleString()} open projects; read the newest ${run.scanned}. Raise “Search Pages to Read” in Settings to go deeper.</span>` : '';
+  const ignored = (run.ignored_filters || []).length
+    ? `<div class="text-warning mt-1">Your search URL has filters this app can't apply, so they were ignored: ${esc(run.ignored_filters.join(', '))}.</div>` : '';
+  box.className = 'mb-4 px-4 py-2.5 rounded-xl border text-xs bg-surface border-border text-muted';
+  setHtml(box, `<span class="text-primary font-medium">Last fetch ${esc(when)}:</span>
+    <span class="text-primary">${run.scanned}</span> read (${run.new} new) ·
+    <span class="text-success">${run.fetched}</span> newly ready to analyze ·
+    ${run.skipped} skipped · ${run.closed} closed${run.failed ? ` · <span class="text-danger">${run.failed} failed</span>` : ''}
+    ${reasonText ? `<span class="block mt-0.5">Skipped: ${esc(reasonText)}.</span>` : ''}
+    ${available ? `<span class="block mt-0.5">${available}</span>` : ''}${ignored}`);
+}
+
+function renderTabs(by, total) {
+  const counts = t => t.key === 'all' ? (total || 0)
+    : t.statuses.split(',').reduce((sum, s) => sum + (by[s] || 0), 0);
+  const visible = STATUS_TABS.filter(t => t.key === 'all' || t.key === _activeTab || counts(t) > 0);
+  setHtml(document.getElementById('status-tabs'), visible.map(t => `
+    <button class="tab-btn ${t.key === _activeTab ? 'active' : ''}" onclick="selectTab('${t.key}')">
+      ${t.label}<span class="tab-count">${counts(t)}</span>
+    </button>`).join(''));
+}
+
+function selectTab(key) {
+  _activeTab = key;
+  _remember('projects_tab', key);
+  if (_stats) renderTabs(_stats.by_status || {}, _stats.total);
+  loadProjects(1);
+}
+
+function onSortChange() {
+  _remember('projects_sort', document.getElementById('sort-select').value);
+  loadProjects(1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Actions
+// ─────────────────────────────────────────────────────────────────────────────
+async function triggerAction(action) {
+  const endpoints = {
+    project_fetch:   '/api/projects/fetch',
+    project_analyze: '/api/projects/analyze',
+    project_submit:  '/api/projects/submit',
+  };
+  if (action === 'project_submit') {
+    const n = (_stats && _stats.actionable.approved) || 0;
+    const flagged = (_stats && _stats.actionable.ready_with_concerns) || 0;
+    const ok = await showConfirmModal(`Place ${n} real bid${n === 1 ? '' : 's'} on Freelancer?`,
+      'Each ready proposal is posted from your account, one at a time, with your configured pause between bids. Clients will see them and bid credits are used.'
+      + (flagged ? ` ${flagged} of them ${flagged === 1 ? 'has' : 'have'} concerns marked ⚠ in the list, so you may want to read ${flagged === 1 ? 'it' : 'them'} first.` : ''),
+      'Place bids');
+    if (!ok) return;
+  }
+  try {
+    const r = await fetch(endpoints[action], { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || d.message || r.statusText);
+    showToast(d.message || 'Task queued.', 'success');
+    if (action === 'project_fetch') { _lastProgressLabel = ''; showProgress('Reading projects from Freelancer…', null); }
+    refreshProjectStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function stopAction(action) {
+  try {
+    const r = await fetch(`/api/stop/${action}`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(d.message || 'Stop signal sent.', 'warning');
+    refreshProjectStats();
+    scheduleTableRefresh();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Progress bar
+// ─────────────────────────────────────────────────────────────────────────────
+let _lastProgressLabel = '';
+window.addEventListener('project_progress', e => {
+  const d = e.detail || {};
+  _lastProgressLabel = d.message || '';
+  showProgress(d.message || 'Working…', d.total ? [d.current, d.total] : null);
+});
+
+function showProgress(label, counts) {
+  document.getElementById('work-progress').classList.add('active');
+  setText('work-progress-label', label);
+  setText('work-progress-count', counts ? `${counts[0]}/${counts[1]}` : '');
+  const bar = document.getElementById('work-progress-bar');
+  bar.classList.toggle('indeterminate', !counts);
+  bar.style.width = counts ? `${Math.round((counts[0] / counts[1]) * 100)}%` : '';
+}
+
+function hideProgress() {
+  document.getElementById('work-progress').classList.remove('active');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Table
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadProjects(page = 1) {
+  _currentPage = page;
+  const search = document.getElementById('search-input').value.trim();
+  const tab = STATUS_TABS.find(t => t.key === _activeTab) || STATUS_TABS[0];
+  const params = new URLSearchParams({
+    page, status: tab.statuses, sort: document.getElementById('sort-select').value,
+  });
+  if (search) params.set('search', search);
+
+  const seq = ++_loadSeq;
+  try {
+    const r = await fetch(`/api/projects?${params}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    if (seq !== _loadSeq) return;
+    _totalPages = d.pages || 1;
+    // Leave the DOM alone when nothing changed: no flicker, no lost scroll or open menu.
+    const json = JSON.stringify(d);
+    if (json !== _lastTableJson) {
+      _lastTableJson = json;
+      _rows = d.projects;
+      renderProjects(d.projects, d.total);
+      renderPagination(d.current_page, d.pages);
+    }
+    updatePanelNav();
+  } catch (err) {
+    if (seq !== _loadSeq) return;
+    _lastTableJson = '';
+    document.getElementById('project-tbody').innerHTML = `
+      <tr><td colspan="10" class="px-4 py-10 text-center text-danger text-sm">
+        Couldn't load the projects: ${esc(err.message)}
+        <button onclick="loadProjects(${page})" class="underline ml-2">Try again</button>
+      </td></tr>`;
+  }
+}
+
+// Socket events can arrive in bursts; one table refresh covers them all.
+let _tableTimer = null;
+function scheduleTableRefresh() {
+  clearTimeout(_tableTimer);
+  _tableTimer = setTimeout(() => loadProjects(_currentPage), 600);
+}
+
+function scorePill(score) {
+  if (score == null) return `<span class="px-2 py-0.5 rounded-full text-xs ws-none">—</span>`;
+  const pct = Math.round(score);
+  const cls = pct >= 70 ? 'ws-high' : pct >= 45 ? 'ws-mid' : 'ws-low';
+  return `<span class="px-2 py-0.5 rounded-full text-xs font-medium ${cls}">${pct}</span>`;
+}
+
+function emptyState() {
+  const run = _stats && _stats.last_fetch;
+  if (_activeTab !== 'all' || document.getElementById('search-input').value.trim()) {
+    return `<p>Nothing here right now.</p>
+      <button onclick="selectTab('all'); document.getElementById('search-input').value=''; loadProjects(1);"
+              class="text-xs text-accent hover:underline">Show all projects</button>`;
+  }
+  if (run && run.error) return `<p>No projects yet — the last fetch didn't finish.</p><p class="text-xs">See the note above for how to fix it.</p>`;
+  return `<p>No projects yet.</p>
+    <p class="text-xs">Click <b>Fetch Projects</b> to read the newest projects from your search.
+      Your filters live in <a href="/settings" class="text-accent hover:underline">Settings → Projects / Proposals</a>.</p>`;
+}
+
+function clientCell(p) {
+  const place = p.client_country || '—';
+  const rep = p.client_reviews
+    ? `<span class="text-warning">★</span> ${Number(p.client_rating).toFixed(1)} <span class="text-muted">(${p.client_reviews})</span>`
+    : `<span class="text-muted">no reviews</span>`;
+  const paid = p.payment_verified
+    ? `<i data-lucide="badge-check" class="w-3 h-3 text-success inline" title="Payment verified"></i>` : '';
+  return `<div class="text-xs text-primary truncate max-w-[9rem]" title="${esc(p.client_city ? p.client_city + ', ' + place : place)}">${esc(place)} ${paid}</div>
+          <div class="text-[11px]">${rep}</div>`;
+}
+
+function renderProjects(projects, total) {
+  const tbody = document.getElementById('project-tbody');
+  setText('project-count', `${total} project${total !== 1 ? 's' : ''}`);
+
+  if (!projects.length) {
+    tbody.innerHTML = `
+      <tr><td colspan="10" class="px-4 py-12 text-center text-muted text-sm">
+        <div class="space-y-2">${emptyState()}</div>
+      </td></tr>`;
+    updateBulkBar();
+    return;
+  }
+
+  tbody.innerHTML = projects.map(p => {
+    const prop = p.proposal;
+    const ourBid = prop && prop.bid_amount
+      ? `${money(prop.bid_amount, p.currency)}<span class="text-muted text-[10px]"> / ${prop.period_days || '?'}d</span>`
+      : '<span class="text-muted">—</span>';
+    const reason = p.skip_reason || (p.status === 'failed' && prop && prop.error) || '';
+    const concerns = p.status === 'approved' ? (p.concerns || []).join('; ') : '';
+    const warn = reason
+      ? `<span class="block text-[10px] ${p.status === 'failed' ? 'text-danger' : 'text-warning'} truncate max-w-md" title="${esc(reason)}">${esc(reason)}</span>`
+      : concerns
+        ? `<span class="block text-[10px] text-warning truncate max-w-md" title="${esc(concerns)}">⚠ ${esc(concerns)}</span>`
+        : '';
+    return `
+    <tr class="border-b border-border/50 transition-colors ${p.id === _activeProjectId ? 'is-open' : ''}"
+        data-id="${p.id}" data-title="${esc(p.title || '')}"
+        onclick="openDetail(${p.id})">
+      <td class="px-3 py-3 text-center" onclick="event.stopPropagation()">
+        <input type="checkbox" class="project-checkbox align-middle accent-accent"
+               value="${p.id}" ${_selected.has(p.id) ? 'checked' : ''} onchange="onRowCheck(this)">
+      </td>
+      <td class="px-4 py-3">
+        <div class="flex items-center gap-2 min-w-0">
+          ${p.has_attachments ? `<i data-lucide="paperclip" class="w-3 h-3 text-muted flex-shrink-0" title="Has attachments"></i>` : ''}
+          <span class="text-sm text-primary truncate max-w-md" title="${esc(p.title || '')}">
+            ${esc(p.title || '—')}
+          </span>
+          ${p.language && p.language !== 'en' ? `<span class="text-[10px] text-muted border border-border rounded px-1 flex-shrink-0 uppercase">${esc(p.language)}</span>` : ''}
+        </div>
+        ${p.skills ? `<span class="text-xs text-muted truncate max-w-md block" title="${esc(p.skills)}">${esc(p.skills)}</span>` : ''}
+        ${warn}
+      </td>
+      <td class="px-4 py-3 text-right font-medium text-primary whitespace-nowrap text-xs">${budgetText(p)}</td>
+      <td class="px-4 py-3 text-right text-xs whitespace-nowrap">
+        <div class="text-primary">${p.bid_count ?? '—'}</div>
+        ${p.avg_bid != null ? `<div class="text-[11px] text-muted">avg ${money(p.avg_bid, p.currency)}</div>` : ''}
+      </td>
+      <td class="px-4 py-3">${clientCell(p)}</td>
+      <td class="px-4 py-3 text-right text-xs text-muted whitespace-nowrap" title="${esc(fmtDate(p.posted_at))}">${esc(timeAgo(p.posted_at))}</td>
+      <td class="px-4 py-3 text-center">${scorePill(p.opportunity_score)}</td>
+      <td class="px-4 py-3 text-right text-xs text-primary whitespace-nowrap">${ourBid}</td>
+      <td class="px-4 py-3 text-center">
+        <span class="status-cell px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap badge-${p.status}">
+          ${STATUS_LABELS[p.status] || p.status}
+        </span>
+      </td>
+      <td class="px-4 py-3 text-center relative" onclick="event.stopPropagation()">
+        <button onclick="toggleRowMenu(event, ${p.id})" title="Actions"
+                class="p-1 rounded-lg text-muted hover:text-primary hover:bg-white/5 transition-colors">
+          <i data-lucide="more-horizontal" class="w-4 h-4"></i>
+        </button>
+        <div id="row-menu-${p.id}" class="row-menu hidden">
+          <a class="menu-item" href="${esc(p.url)}" target="_blank" rel="noopener" onclick="closeRowMenus()">
+            <i data-lucide="external-link" class="w-3.5 h-3.5"></i> Open on Freelancer
+          </a>
+          <div class="menu-sep"></div>
+          ${['fetched','failed','skipped','needs_review','draft_ready','approved'].includes(p.status) ? `
+          <button onclick="rowAction(${p.id}, 'analyze'); closeRowMenus()">
+            <i data-lucide="brain" class="w-3.5 h-3.5"></i>
+            ${p.status === 'fetched' ? 'Analyze' : 'Analyze again'}
+          </button>` : ''}
+          ${prop && ['failed','needs_review','draft_ready','approved'].includes(p.status) ? `
+          <button onclick="rowAction(${p.id}, 'regenerate'); closeRowMenus()">
+            <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Rewrite proposal
+          </button>` : ''}
+          ${['draft_ready','needs_review'].includes(p.status) ? `
+          <button onclick="rowAction(${p.id}, 'approve'); closeRowMenus()">
+            <i data-lucide="check" class="w-3.5 h-3.5"></i> Approve Proposal
+          </button>` : ''}
+          ${p.status === 'approved' ? `
+          <button onclick="rowAction(${p.id}, 'submit'); closeRowMenus()">
+            <i data-lucide="send" class="w-3.5 h-3.5"></i> Submit Bid
+          </button>` : ''}
+          ${['draft_ready','needs_review','approved'].includes(p.status) ? `
+          <button onclick="rowAction(${p.id}, 'reject'); closeRowMenus()">
+            <i data-lucide="x" class="w-3.5 h-3.5"></i> Reject / Skip
+          </button>` : ''}
+          <div class="menu-sep"></div>
+          <button class="menu-item danger"
+                  onclick="deleteSingle(${p.id}, this.closest('tr').dataset.title); closeRowMenus()">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
+          </button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+
+  lucide.createIcons({ nodes: [tbody] });
+  updateBulkBar();
+}
+
+function renderPagination(page, pages) {
+  const wrap = document.getElementById('pagination');
+  if (pages <= 1) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  setText('page-info', `Page ${page} of ${pages}`);
+  document.getElementById('page-prev').disabled = (page <= 1);
+  document.getElementById('page-next').disabled = (page >= pages);
+}
+
+function changePage(delta) {
+  const next = _currentPage + delta;
+  if (next < 1 || next > _totalPages) return;
+  loadProjects(next);
+}
+
+let _filterTimer = null;
+function onFilterChange() {
+  clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(() => loadProjects(1), 300);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Row actions
+// ─────────────────────────────────────────────────────────────────────────────
+async function rowAction(id, action) {
+  const endpoints = {
+    analyze:    `/api/projects/${id}/analyze`,
+    regenerate: `/api/projects/${id}/regenerate`,
+    approve:    `/api/projects/${id}/approve`,
+    reject:     `/api/projects/${id}/reject`,
+    submit:     `/api/projects/${id}/submit`,
+  };
+  if (action === 'submit') {
+    const ok = await showConfirmModal('Place this bid on Freelancer?',
+      'The proposal is posted from your account with the amount and delivery time shown. The client will see it right away.',
+      'Place bid');
+    if (!ok) return;
+  }
+  try {
+    const r = await fetch(endpoints[action], { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(d.message || `${action} OK.`, 'success');
+    loadProjects(_currentPage);
+    refreshProjectStats();
+    if (_activeProjectId === id) {
+      _proposalDirty = false;
+      if (action === 'analyze' || action === 'regenerate') {
+        setBusy(action === 'analyze' ? 'Queued for analysis — the proposal will appear here when it is written.'
+                                     : 'Writing a new proposal — it will appear here in a minute or so.');
+      }
+      loadDetail(id);
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Detail panel
+// ─────────────────────────────────────────────────────────────────────────────
+function openDetail(id) {
+  if (_activeProjectId !== id) {
+    _proposalDirty = false;
+    _busyText = '';
+    setText('panel-title', 'Loading…');
+    document.getElementById('panel-body').scrollTop = 0;
+  }
+  _activeProjectId = id;
+  document.getElementById('detail-panel').classList.add('open');
+  document.getElementById('panel-overlay').classList.remove('hidden');
+  document.querySelectorAll('#project-tbody tr').forEach(tr =>
+    tr.classList.toggle('is-open', Number(tr.dataset.id) === id));
+  updatePanelNav();
+  loadDetail(id);
+}
+
+function closeDetail() {
+  _activeProjectId = null;
+  _activeProject = null;
+  _proposalDirty = false;
+  document.getElementById('detail-panel').classList.remove('open');
+  document.getElementById('panel-overlay').classList.add('hidden');
+  document.querySelectorAll('#project-tbody tr.is-open').forEach(tr => tr.classList.remove('is-open'));
+}
+
+function updatePanelNav() {
+  const i = _rows.findIndex(p => p.id === _activeProjectId);
+  document.getElementById('panel-prev').disabled = i <= 0;
+  document.getElementById('panel-next').disabled = i < 0 || i >= _rows.length - 1;
+}
+
+async function stepDetail(delta) {
+  const i = _rows.findIndex(p => p.id === _activeProjectId);
+  const next = _rows[i + delta];
+  if (!next) return;
+  if (_proposalDirty) {
+    const ok = await showConfirmModal('Discard your edits?',
+      'You changed this proposal without saving it.', 'Discard');
+    if (!ok) return;
+  }
+  openDetail(next.id);
+}
+
+document.addEventListener('keydown', e => {
+  if (!_activeProjectId) return;
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+  if (e.key === 'ArrowLeft')  stepDetail(-1);
+  if (e.key === 'ArrowRight') stepDetail(1);
+  if (e.key === 'Escape')     closeDetail();
+});
+
+let _detailSeq = 0;
+async function loadDetail(id) {
+  const seq = ++_detailSeq;
+  try {
+    const r = await fetch(`/api/projects/${id}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const p = await r.json();
+    if (seq !== _detailSeq || id !== _activeProjectId) return;
+    _activeProject = p;
+    renderDetail(p);
+  } catch (err) {
+    if (seq !== _detailSeq) return;
+    setText('panel-title', "Couldn't load this project");
+    showToast(`Detail load failed: ${err.message}`, 'error');
+  }
+}
+
+let _busyText = '';
+function setBusy(text) {
+  _busyText = text;
+  document.getElementById('panel-busy').classList.toggle('hidden', !text);
+  setText('panel-busy-text', text);
+}
+
+function renderDetail(p) {
+  setText('panel-title', p.title || '—');
+  document.getElementById('panel-open-link').href = p.url || '#';
+  setText('panel-budget', budgetText(p));
+  setText('panel-avgbid', p.avg_bid != null ? money(p.avg_bid, p.currency) : '—');
+  setText('panel-bids',   p.bid_count ?? '—');
+
+  const scoreEl = document.getElementById('panel-score');
+  if (p.opportunity_score != null) {
+    const s = Math.round(p.opportunity_score);
+    scoreEl.textContent = s;
+    scoreEl.className = `text-sm font-bold ${s >= 70 ? 'text-success' : s >= 45 ? 'text-warning' : 'text-danger'}`;
+  } else {
+    scoreEl.textContent = '—';
+    scoreEl.className = 'text-sm font-bold text-muted';
+  }
+
+  const statusEl = document.getElementById('panel-status');
+  statusEl.textContent = STATUS_LABELS[p.status] || p.status;
+  statusEl.className = `px-2 py-0.5 rounded-full text-xs font-medium badge-${p.status}`;
+  const when = [p.posted_at ? `Posted ${timeAgo(p.posted_at)}` : '', biddingEnds(p.bidding_ends_at)]
+    .filter(Boolean).join(' · ');
+  setText('panel-posted', when);
+
+  const warnEl = document.getElementById('panel-warning');
+  const warning = p.skip_reason || (p.status === 'failed' && p.proposal && p.proposal.error) || '';
+  warnEl.textContent = warning;
+  warnEl.classList.toggle('hidden', !warning);
+
+  if (p.status === 'analyzing') setBusy('Analyzing the brief and writing the proposal…');
+  else if (p.status === 'submitting') setBusy('Placing the bid on Freelancer…');
+  else if (!_busyText || p.status !== 'fetched') setBusy('');
+
+  // Client chips
+  const chips = [];
+  if (p.client_country) chips.push(['map-pin', p.client_city ? `${p.client_city}, ${p.client_country}` : p.client_country]);
+  chips.push(['star', p.client_reviews
+    ? `${Number(p.client_rating).toFixed(1)}/5 (${p.client_reviews} reviews)` : 'No reviews yet']);
+  if (p.client_completed) chips.push(['check-circle', `${p.client_completed} completed projects`]);
+  if (p.client_member_since) chips.push(['calendar', `Member since ${p.client_member_since}`]);
+  chips.push(['credit-card', p.payment_verified === true ? 'Payment verified' : 'Payment not verified']);
+  if (p.identity_verified === true) chips.push(['badge-check', 'Identity verified']);
+  if (p.deposit_made === true) chips.push(['banknote', 'Deposit made']);
+  if (p.is_featured) chips.push(['sparkles', 'Featured']);
+  if (p.is_recruiter) chips.push(['user-check', 'Recruiter project']);
+  document.getElementById('panel-client').innerHTML = chips.map(([icon, label]) =>
+    `<span class="flex items-center gap-1 px-2 py-1 rounded-lg bg-bg border border-border text-primary">
+       <i data-lucide="${icon}" class="w-3 h-3 text-muted"></i>${esc(label)}</span>`
+  ).join('');
+
+  // Skills
+  const skillsWrap = document.getElementById('panel-skills-wrap');
+  const skillList = (p.skills || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (skillList.length) {
+    document.getElementById('panel-skills').innerHTML = skillList.map(s =>
+      `<span class="px-2 py-0.5 rounded-full text-xs bg-bg border border-border text-primary">${esc(s)}</span>`
+    ).join('');
+    skillsWrap.classList.remove('hidden');
+  } else skillsWrap.classList.add('hidden');
+
+  setText('panel-desc', p.description || 'No description captured.');
+
+  // Attachments
+  const attWrap = document.getElementById('panel-attachments-wrap');
+  if (p.attachments && p.attachments.length) {
+    document.getElementById('panel-attachments').innerHTML = p.attachments.map(a => {
+      const image = a.file_type === 'image';
+      const icon = image ? 'image' : (a.downloaded ? 'file-check' : 'file-x');
+      const tone = image ? 'text-muted' : (a.downloaded ? 'text-success' : 'text-danger');
+      return `
+      <div class="flex items-center gap-2 text-muted">
+        <i data-lucide="${icon}" class="w-3.5 h-3.5 ${tone}"></i>
+        <span class="text-primary">${esc(a.filename)}</span>
+        <span>${a.file_size ? (a.file_size / 1024).toFixed(0) + ' KB' : ''}</span>
+        ${image ? '<span>(view on Freelancer)</span>'
+                : (!a.downloaded ? '<span class="text-danger">(download failed)</span>' : '')}
+      </div>`;
+    }).join('');
+    attWrap.classList.remove('hidden');
+  } else attWrap.classList.add('hidden');
+
+  renderAnalysis(p);
+  renderProposal(p);
+
+  // Logs
+  const LOG_COLORS = { INFO:'text-muted', SUCCESS:'text-success', WARNING:'text-warning', ERROR:'text-danger' };
+  const logsEl = document.getElementById('panel-logs');
+  logsEl.innerHTML = (p.logs && p.logs.length) ? p.logs.map(l => `
+    <div class="flex items-start gap-2 text-xs py-1">
+      <span class="flex-shrink-0 ${LOG_COLORS[l.level] || 'text-muted'} uppercase font-medium w-14">${l.level}</span>
+      <span class="text-muted flex-shrink-0">${fmtDate(l.created_at)}</span>
+      <span class="text-primary leading-tight">${esc(l.message)}</span>
+    </div>`).join('')
+    : '<p class="text-xs text-muted">No activity yet.</p>';
+
+  // Footer analyze button
+  const canAnalyze = ['fetched','failed','skipped','needs_review','draft_ready','approved'].includes(p.status);
+  document.getElementById('panel-analyze-btn').style.display = canAnalyze ? '' : 'none';
+  setText('panel-analyze-label', p.status === 'fetched' ? 'Analyze' : 'Analyze again');
+
+  lucide.createIcons({ nodes: [document.getElementById('detail-panel')] });
+  updatePanelNav();
+}
+
+function renderAnalysis(p) {
+  const wrap = document.getElementById('panel-analysis-wrap');
+  const a = p.analysis;
+  if (!a) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  setText('panel-goal', a.client_goal || '');
+
+  // Score factor bars
+  const factors = (a.opportunity && a.opportunity.factors) || [];
+  document.getElementById('panel-factors').innerHTML = factors.map(f => {
+    const color = f.score >= 70 ? '#22c55e' : f.score >= 45 ? '#f59e0b' : '#ef4444';
+    return `
+    <div title="${esc(f.detail || '')}">
+      <div class="flex justify-between text-[10px] text-muted mb-0.5">
+        <span>${esc(f.name)}</span><span>${f.score}</span>
+      </div>
+      <div class="factor-bar-track w-full">
+        <div class="factor-bar" style="width:${f.score}%; background:${color};"></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  const lists = [];
+  const addList = (title, items, cls) => {
+    if (items && items.length) lists.push(`
+      <div>
+        <p class="text-muted uppercase tracking-wider text-[10px] mb-1">${title}</p>
+        <ul class="space-y-0.5 ${cls}">${items.map(i => `<li>• ${esc(i)}</li>`).join('')}</ul>
+      </div>`);
+  };
+  if (a.proposal_angle) addList('Angle', [a.proposal_angle], 'text-accent');
+  addList('Details picked from the brief', a.specific_details, 'text-primary');
+  addList('Approach', a.approach, 'text-primary');
+  addList('Deliverables', a.deliverables, 'text-primary');
+  addList('Matched skills', a.matched_skills, 'text-success');
+  addList('Missing skills', a.missing_skills, 'text-warning');
+  addList('Risks', a.risks, 'text-danger');
+  addList('Missing information', a.missing_information, 'text-warning');
+  addList('Concerns', a.concerns, 'text-warning');
+  if (a.recommendation_reason)
+    addList(`Recommendation: ${a.recommendation}`, [a.recommendation_reason], 'text-primary');
+  document.getElementById('panel-analysis-lists').innerHTML = lists.join('');
+}
+
+function renderProposal(p) {
+  const wrap = document.getElementById('panel-proposal-wrap');
+  const prop = p.proposal;
+  if (!prop || prop.content == null) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+
+  // A background refresh must never overwrite what the operator is typing.
+  if (!_proposalDirty) {
+    document.getElementById('panel-proposal-text').value = prop.content || '';
+    document.getElementById('panel-bid-amount').value = prop.bid_amount ?? '';
+    document.getElementById('panel-bid-days').value = prop.period_days ?? '';
+    updateSaveState();
+  }
+  setText('panel-bid-currency', p.currency || 'USD');
+  setText('panel-proposal-meta', proposalMeta(prop));
+  setText('panel-recommendation',
+    (prop.recommended_amount != null)
+      ? `recommended: ${money(prop.recommended_amount, p.currency)} / ${prop.recommended_days ?? '?'}d`
+      : '');
+
+  const reasons = (prop.pricing && prop.pricing.reasons) || [];
+  const durNotes = (prop.duration && prop.duration.notes) || [];
+  document.getElementById('panel-pricing-reasons').innerHTML =
+    [...reasons, ...durNotes].map(r => `<div>· ${esc(r)}</div>`).join('');
+
+  // Review + error info
+  const reviewEl = document.getElementById('panel-review');
+  const bits = [];
+  const claims = (prop.review && prop.review.unsupported_claims) || [];
+  if (claims.length)
+    bits.push(`<span class="text-danger">Not supported by your profile: ${esc(claims.slice(0,3).join(' · '))}</span>`);
+  if (prop.review && prop.review.problems && prop.review.problems.length)
+    bits.push(`<span class="text-warning">Review notes: ${esc(prop.review.problems.slice(0,3).join(' · '))}</span>`);
+  if (prop.error) bits.push(`<span class="text-danger">Last error: ${esc(prop.error)}</span>`);
+  reviewEl.innerHTML = bits.join('<br>');
+
+  // Submission evidence
+  const evEl = document.getElementById('panel-evidence');
+  if (prop.submitted_at) {
+    evEl.classList.remove('hidden');
+    evEl.textContent = `✓ Submitted ${fmtDate(prop.submitted_at)} — `
+      + `${money(prop.submitted_amount, p.currency)} / ${prop.submitted_days}d. `
+      + (prop.submission_evidence || '');
+  } else evEl.classList.add('hidden');
+
+  // Button visibility by status
+  const show = (id, on) => document.getElementById(id).classList.toggle('hidden', !on);
+  const editable = ['draft_ready', 'needs_review', 'approved', 'failed'].includes(p.status);
+  show('panel-approve-btn', ['draft_ready', 'needs_review'].includes(p.status));
+  show('panel-reject-btn', ['draft_ready', 'needs_review', 'approved'].includes(p.status));
+  show('panel-regenerate-btn', ['draft_ready', 'needs_review', 'approved', 'failed', 'skipped'].includes(p.status));
+  show('panel-submit-btn', p.status === 'approved');
+  show('panel-save-btn', editable);
+  document.getElementById('panel-proposal-text').disabled = !editable;
+  document.getElementById('panel-bid-amount').disabled = !editable;
+  document.getElementById('panel-bid-days').disabled = !editable;
+}
+
+function wordCount(text) { return (text.match(/[\p{L}\p{N}'’-]+/gu) || []).length; }
+
+function proposalMeta(prop) {
+  const words = wordCount(document.getElementById('panel-proposal-text').value || prop.content || '');
+  return `${words} words`
+    + (prop.review_score != null ? ` · review ${Math.round(prop.review_score)}/100` : '')
+    + (prop.language && prop.language !== 'en' ? ` · ${prop.language}` : '');
+}
+
+function updateSaveState() {
+  const btn = document.getElementById('panel-save-btn');
+  btn.disabled = !_proposalDirty;
+  setText('panel-save-label', _proposalDirty ? 'Save Edits' : 'Saved');
+}
+
+function onProposalInput() {
+  _proposalDirty = true;
+  updateSaveState();
+  if (_activeProject && _activeProject.proposal) setText('panel-proposal-meta', proposalMeta(_activeProject.proposal));
+}
+
+async function copyProposal() {
+  try {
+    await navigator.clipboard.writeText(document.getElementById('panel-proposal-text').value);
+    showToast('Proposal copied.', 'success');
+  } catch (err) {
+    showToast('Copy needs HTTPS in this browser — select the text and copy it instead.', 'warning');
+  }
+}
+
+// ── Panel actions ────────────────────────────────────────────────────────────
+async function saveProposal() {
+  if (!_activeProjectId) return;
+  const body = {
+    content:     document.getElementById('panel-proposal-text').value,
+    bid_amount:  parseFloat(document.getElementById('panel-bid-amount').value),
+    period_days: parseInt(document.getElementById('panel-bid-days').value, 10),
+  };
+  try {
+    const r = await fetch(`/api/projects/${_activeProjectId}/proposal`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) {
+      const detail = (d.problems || []).join(' · ');
+      throw new Error(d.error + (detail ? ` — ${detail}` : ''));
+    }
+    showToast('Proposal saved.', 'success');
+    _proposalDirty = false;
+    loadDetail(_activeProjectId);
+    loadProjects(_currentPage);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function analyzeProject()     { if (_activeProjectId) rowAction(_activeProjectId, 'analyze'); }
+function approveProject()     { if (_activeProjectId) rowAction(_activeProjectId, 'approve'); }
+function submitProject()      { if (_activeProjectId) rowAction(_activeProjectId, 'submit'); }
+function regenerateProposal() { if (_activeProjectId) rowAction(_activeProjectId, 'regenerate'); }
+
+async function rejectProject() {
+  if (!_activeProjectId) return;
+  const ok = await showConfirmModal('Reject this proposal?',
+    'The project will be marked as skipped. You can re-analyze it later.', 'Reject');
+  if (!ok) return;
+  rowAction(_activeProjectId, 'reject');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Bulk selection / delete
+// ─────────────────────────────────────────────────────────────────────────────
+function onRowCheck(box) {
+  const id = parseInt(box.value, 10);
+  if (box.checked) _selected.add(id); else _selected.delete(id);
+  updateBulkBar();
+}
+
+function updateBulkBar() {
+  document.getElementById('selectedCount').textContent = _selected.size;
+  document.getElementById('bulk-bar').classList.toggle('open', _selected.size > 0);
+  const all = [...document.querySelectorAll('.project-checkbox')];
+  const checked = all.filter(cb => cb.checked).length;
+  const head = document.getElementById('selectAll');
+  head.checked = all.length > 0 && checked === all.length;
+  head.indeterminate = checked > 0 && checked < all.length;
+}
+
+function onSelectAllToggle(box) {
+  document.querySelectorAll('.project-checkbox').forEach(cb => {
+    cb.checked = box.checked;
+    const id = parseInt(cb.value, 10);
+    if (box.checked) _selected.add(id); else _selected.delete(id);
+  });
+  updateBulkBar();
+}
+
+function getSelectedIds() { return [..._selected]; }
+
+function clearSelection() {
+  _selected.clear();
+  document.querySelectorAll('.project-checkbox').forEach(cb => { cb.checked = false; });
+  const head = document.getElementById('selectAll');
+  head.checked = false; head.indeterminate = false;
+  updateBulkBar();
+}
+
+async function deleteSingle(id, title) {
+  const ok = await showConfirmModal('Delete Project?',
+    `"${title || `Project #${id}`}" and its proposal and attachments will be permanently deleted.`);
+  if (!ok) return;
+  try {
+    const r = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || r.statusText);
+    showToast(`"${d.title}" deleted.`, 'success');
+    _selected.delete(id);
+    if (_activeProjectId === id) closeDetail();
+    loadProjects(_currentPage);
+    refreshProjectStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function deleteProjects(ids) {
+  if (!ids || !ids.length) return;
+  const ok = await showConfirmModal(
+    `Delete ${ids.length} project${ids.length !== 1 ? 's' : ''}?`,
+    `Their proposals and attachments will be permanently deleted.`);
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/projects/bulk', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || r.statusText);
+    showToast(`Deleted ${d.deleted_count} project(s).`, 'success');
+    clearSelection();
+    loadProjects(_currentPage);
+    refreshProjectStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Row menu
+// ─────────────────────────────────────────────────────────────────────────────
+function toggleRowMenu(event, id) {
+  event.stopPropagation();
+  const menu = document.getElementById(`row-menu-${id}`);
+  if (!menu) return;
+  const wasOpen = !menu.classList.contains('hidden');
+  closeRowMenus();
+  if (!wasOpen) {
+    menu.classList.remove('hidden');
+    lucide.createIcons({ nodes: [menu] });
+  }
+}
+function closeRowMenus() {
+  document.querySelectorAll('.row-menu').forEach(m => m.classList.add('hidden'));
+}
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.row-menu') && !e.target.closest('button[onclick^="toggleRowMenu"]')) {
+    closeRowMenus();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Socket refresh
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('task_complete', e => {
+  const t = (e.detail || {}).type || '';
+  if (t.startsWith('project')) {
+    scheduleTableRefresh();
+    refreshProjectStats();
+    if (_activeProjectId) loadDetail(_activeProjectId);
+  }
+});
+window.addEventListener('task_status', () => refreshProjectStats());
+window.addEventListener('project_updated', e => {
+  scheduleTableRefresh();
+  refreshProjectStats();
+  if (_activeProjectId && e.detail && e.detail.id === _activeProjectId) {
+    _busyText = '';
+    loadDetail(_activeProjectId);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// The API sends naive UTC for stored times; without this they read as local time.
+function parseTime(isoStr) {
+  if (!isoStr) return null;
+  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(isoStr) ? isoStr : `${isoStr}Z`);
+}
+function fmtDate(isoStr) {
+  const d = parseTime(isoStr);
+  if (!d) return '—';
+  return d.toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+function timeAgo(isoStr) {
+  const d = parseTime(isoStr);
+  if (!d) return '—';
+  const mins = Math.round((Date.now() - d.getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+function biddingEnds(isoStr) {
+  const d = parseTime(isoStr);
+  if (!d) return '';
+  const hours = Math.round((d.getTime() - Date.now()) / 3600000);
+  if (hours <= 0) return 'bidding ended';
+  return hours < 48 ? `bidding ends in ${hours}h` : `bidding ends in ${Math.round(hours / 24)} days`;
+}
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+// These strips refresh every few seconds while work runs. Rewriting identical markup
+// would throw away whatever the operator is in the middle of clicking.
+function setHtml(el, html) {
+  if (el.dataset.html !== html) {
+    el.dataset.html = html;
+    el.innerHTML = html;
+  }
+}
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+document.getElementById('sort-select').value = _recall('projects_sort', 'best');
+refreshProjectStats().then(() => loadProjects(1));
+updateSaveState();
+lucide.createIcons();
+</script>
+{% endblock %}

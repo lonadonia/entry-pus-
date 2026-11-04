@@ -1,0 +1,672 @@
+{% extends "base.html" %}
+{% block title %}Gallery — ContestBot{% endblock %}
+{% block page_title %}Gallery{% endblock %}
+
+{% block head %}
+<style>
+  /* Auto-fill grid — masonry-like */
+  #gallery-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1rem;
+  }
+
+  /* Card */
+  .design-card {
+    position: relative;
+    background: #12141f;
+    border: 1px solid #1e2030;
+    border-radius: 12px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: transform .18s ease, box-shadow .18s ease, border-color .18s ease;
+  }
+  .design-card:hover {
+    transform: scale(1.02);
+    box-shadow: 0 12px 32px rgba(0,0,0,.5);
+    border-color: rgba(79,110,247,.4);
+  }
+
+  /* Hover overlay */
+  .card-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, rgba(10,12,20,.95) 40%, rgba(10,12,20,.1) 100%);
+    opacity: 0;
+    transition: opacity .2s ease;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    padding: 1rem;
+    gap: .5rem;
+  }
+  .design-card:hover .card-overlay { opacity: 1; }
+
+  /* Thumbnail wrapper keeps a consistent aspect ratio */
+  .card-img-wrap {
+    width: 100%;
+    padding-top: 75%; /* 4:3 default */
+    position: relative;
+    background: #0a0c14;
+    overflow: hidden;
+  }
+  .card-img-wrap img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: opacity .3s;
+  }
+  .card-img-wrap img.lazy { opacity: 0; }
+  .card-img-wrap img.loaded { opacity: 1; }
+
+  /* Filter tab pill */
+  .tab-pill {
+    padding: .375rem .875rem;
+    border-radius: 9999px;
+    font-size: .8125rem;
+    font-weight: 500;
+    border: 1px solid #1e2030;
+    color: #64748b;
+    cursor: pointer;
+    transition: background .15s, color .15s, border-color .15s;
+  }
+  .tab-pill:hover:not(.active) { color: #e2e8f0; border-color: rgba(79,110,247,.3); }
+  .tab-pill.active {
+    background: rgba(79,110,247,.15);
+    color: #4f6ef7;
+    border-color: rgba(79,110,247,.4);
+  }
+
+  /* Lightbox */
+  #lightbox {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(0,0,0,.88);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+  }
+  #lightbox.open { display: flex; }
+
+  /* Lightbox nav arrows */
+  .lb-arrow {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    z-index: 70;
+    background: rgba(18,20,31,.8);
+    border: 1px solid #1e2030;
+    border-radius: 9999px;
+    width: 2.5rem;
+    height: 2.5rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #e2e8f0;
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+  }
+  .lb-arrow:hover {
+    background: rgba(79,110,247,.2);
+    border-color: rgba(79,110,247,.5);
+  }
+  .lb-arrow.prev { left: 1rem; }
+  .lb-arrow.next { right: calc(380px + 1rem); }
+
+  /* Lightbox detail panel */
+  #lb-detail {
+    width: 380px;
+    flex-shrink: 0;
+    background: #12141f;
+    border-left: 1px solid #1e2030;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #1e2030 transparent;
+  }
+
+  /* Skeleton shimmer */
+  @keyframes shimmer {
+    from { background-position: -600px 0; }
+    to   { background-position:  600px 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, #12141f 25%, #1e2030 50%, #12141f 75%);
+    background-size: 600px 100%;
+    animation: shimmer 1.4s infinite;
+    border-radius: 6px;
+  }
+
+  /* Prompt text box */
+  #lb-prompt {
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    scrollbar-color: #1e2030 transparent;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Filters bar ─────────────────────────────────────────────────────────── -->
+<div class="flex flex-wrap items-center gap-3 mb-5">
+
+  <!-- Status tabs -->
+  <div class="flex items-center gap-1.5">
+    <button class="tab-pill active" data-tab="all"       onclick="setTab(this)">All</button>
+    <button class="tab-pill"        data-tab="submitted" onclick="setTab(this)">Submitted</button>
+    <button class="tab-pill"        data-tab="generated" onclick="setTab(this)">Generated</button>
+    <button class="tab-pill"        data-tab="failed"    onclick="setTab(this)">Failed</button>
+  </div>
+
+  <!-- Spacer -->
+  <div class="flex-1"></div>
+
+  <!-- Sort -->
+  <div class="flex items-center gap-2">
+    <span class="text-xs text-muted">Sort:</span>
+    <select id="sort-select"
+            onchange="applySortAndRender()"
+            class="px-3 py-1.5 rounded-lg border border-border text-sm
+                   bg-bg text-primary focus:outline-none focus:border-accent
+                   focus:ring-2 focus:ring-accent/20">
+      <option value="newest">Newest</option>
+      <option value="prize">Highest Prize</option>
+      <option value="score">Best Score</option>
+    </select>
+  </div>
+
+  <!-- Count -->
+  <span id="gallery-count" class="text-xs text-muted whitespace-nowrap pl-1">—</span>
+
+</div>
+
+<!-- ── Gallery grid ────────────────────────────────────────────────────────── -->
+<div id="gallery-grid">
+  <!-- Skeleton cards while loading -->
+  <div id="skeleton-cards" class="contents">
+    {% for _ in range(8) %}
+    <div class="design-card">
+      <div class="card-img-wrap"><div class="skeleton absolute inset-0"></div></div>
+      <div class="p-3 space-y-2">
+        <div class="skeleton h-4 w-3/4 rounded"></div>
+        <div class="flex gap-1.5">
+          <div class="skeleton h-4 w-14 rounded-full"></div>
+          <div class="skeleton h-4 w-10 rounded-full"></div>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Empty state (hidden until needed) -->
+<div id="empty-state" class="hidden flex flex-col items-center justify-center py-24 text-center">
+  <i data-lucide="image-off" class="w-12 h-12 text-muted mb-4"></i>
+  <p class="text-base font-medium text-primary mb-1">No designs yet</p>
+  <p class="text-sm text-muted">Run the bot to generate contest designs.</p>
+</div>
+
+{% endblock %}
+
+
+{% block content_after %}{% endblock %}
+
+{% block scripts %}
+
+<!-- ── Lightbox markup (outside main so it's always in DOM) ──────────────── -->
+<div id="lightbox" role="dialog" aria-modal="true" aria-label="Design viewer">
+
+  <!-- Close backdrop -->
+  <div class="absolute inset-0 z-60" onclick="closeLightbox()"></div>
+
+  <!-- Prev arrow -->
+  <button class="lb-arrow prev" onclick="lbNavigate(-1)" aria-label="Previous">
+    <i data-lucide="chevron-left" class="w-5 h-5"></i>
+  </button>
+
+  <!-- Next arrow -->
+  <button class="lb-arrow next" onclick="lbNavigate(1)" aria-label="Next">
+    <i data-lucide="chevron-right" class="w-5 h-5"></i>
+  </button>
+
+  <!-- Image area -->
+  <div class="relative flex-1 flex items-center justify-center p-4 z-60 min-w-0">
+    <img id="lb-img"
+         src=""
+         alt="Design full resolution"
+         class="max-w-full max-h-full object-contain rounded-xl shadow-2xl"
+         style="max-height: calc(100vh - 2rem);">
+  </div>
+
+  <!-- Detail panel -->
+  <div id="lb-detail" class="relative z-60 flex flex-col">
+
+    <!-- Panel header -->
+    <div class="flex items-center justify-between px-5 py-4 border-b border-border flex-shrink-0">
+      <h2 class="text-sm font-semibold text-primary">Design Details</h2>
+      <button onclick="closeLightbox()"
+              class="p-1.5 rounded-lg hover:bg-white/5 text-muted hover:text-primary transition-colors">
+        <i data-lucide="x" class="w-4 h-4"></i>
+      </button>
+    </div>
+
+    <!-- Panel body -->
+    <div class="flex-1 px-5 py-4 space-y-5 overflow-y-auto">
+
+      <!-- Contest title -->
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Contest</p>
+        <p id="lb-title" class="text-sm font-medium text-primary leading-snug">—</p>
+      </div>
+
+      <!-- Meta row -->
+      <div class="grid grid-cols-3 gap-2 text-center">
+        <div class="bg-bg border border-border rounded-lg p-2.5">
+          <p id="lb-prize" class="text-base font-bold text-primary">—</p>
+          <p class="text-[10px] text-muted mt-0.5">Prize</p>
+        </div>
+        <div class="bg-bg border border-border rounded-lg p-2.5">
+          <p id="lb-score" class="text-base font-bold">—</p>
+          <p class="text-[10px] text-muted mt-0.5">Win Score</p>
+        </div>
+        <div class="bg-bg border border-border rounded-lg p-2.5">
+          <p id="lb-variation" class="text-base font-bold text-primary">—</p>
+          <p class="text-[10px] text-muted mt-0.5">Variation</p>
+        </div>
+      </div>
+
+      <!-- Badges row -->
+      <div class="flex flex-wrap gap-2">
+        <span id="lb-status-badge"  class="px-2 py-0.5 rounded-full text-xs font-medium">—</span>
+        <span id="lb-method-badge"  class="px-2 py-0.5 rounded-full text-xs font-medium
+                                           bg-accent/15 text-accent">—</span>
+        <span id="lb-created-badge" class="text-xs text-muted self-center">—</span>
+      </div>
+
+      <!-- Prompt -->
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-2">Prompt Used</p>
+        <pre id="lb-prompt"
+             class="text-xs text-primary leading-relaxed bg-bg
+                    border border-border rounded-lg p-3 font-mono">—</pre>
+      </div>
+
+    </div>
+
+    <!-- Panel footer -->
+    <div class="px-5 py-4 border-t border-border flex-shrink-0 flex gap-2">
+      <a id="lb-contest-link" href="#" target="_blank"
+         class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                border border-border text-sm text-muted hover:text-primary
+                hover:border-primary/40 transition-colors">
+        <i data-lucide="external-link" class="w-4 h-4"></i> View Contest
+      </a>
+      <button id="lb-download-btn"
+              onclick="downloadDesign()"
+              class="flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                     border border-accent/40 text-accent text-sm
+                     hover:bg-accent/10 transition-colors">
+        <i data-lucide="download" class="w-4 h-4"></i> Download
+      </button>
+    </div>
+
+  </div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+let _allDesigns  = [];     // full list from API
+let _filtered    = [];     // after tab + sort
+let _activeTab   = 'all';
+let _lbIndex     = -1;     // current lightbox position in _filtered
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Load designs
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadDesigns() {
+  try {
+    // Fetch all pages (API is 24/page; grab up to 10 pages = 240 designs)
+    let page = 1, all = [];
+    while (true) {
+      const r = await fetch(`/api/designs?page=${page}&status=all`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const d = await r.json();
+      all = all.concat(d.designs);
+      if (page >= d.pages) break;
+      page++;
+    }
+    _allDesigns = all;
+    applySortAndRender();
+  } catch (err) {
+    showGalleryError(err.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Filter tabs
+// ─────────────────────────────────────────────────────────────────────────────
+function setTab(btn) {
+  document.querySelectorAll('.tab-pill').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  _activeTab = btn.dataset.tab;
+  applySortAndRender();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Sort + render
+// ─────────────────────────────────────────────────────────────────────────────
+function applySortAndRender() {
+  let list = _activeTab === 'all'
+    ? _allDesigns
+    : _allDesigns.filter(d => d.status === _activeTab);
+
+  const sort = document.getElementById('sort-select').value;
+  if (sort === 'prize') {
+    list = [...list].sort((a, b) => (b.contest_prize || 0) - (a.contest_prize || 0));
+  } else if (sort === 'score') {
+    list = [...list].sort((a, b) => {
+      const sa = a.win_score ?? -1, sb = b.win_score ?? -1;
+      return sb - sa;
+    });
+  } else {
+    list = [...list].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+  }
+
+  _filtered = list;
+  renderGrid(list);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Render grid
+// ─────────────────────────────────────────────────────────────────────────────
+function renderGrid(designs) {
+  const grid     = document.getElementById('gallery-grid');
+  const skeleton = document.getElementById('skeleton-cards');
+  const empty    = document.getElementById('empty-state');
+  const countEl  = document.getElementById('gallery-count');
+
+  if (skeleton) skeleton.remove();
+  countEl.textContent = `${designs.length} design${designs.length !== 1 ? 's' : ''}`;
+
+  if (!designs.length) {
+    grid.innerHTML = '';
+    grid.appendChild(document.getElementById('empty-state'));
+    empty.classList.remove('hidden');
+    lucide.createIcons({ nodes: [empty] });
+    return;
+  }
+
+  empty.classList.add('hidden');
+
+  grid.innerHTML = designs.map((d, idx) => {
+    const thumb = thumbUrl(d);
+    const prize = d.contest_prize
+      ? `${d.contest_currency || 'USD'} ${Number(d.contest_prize).toLocaleString()}`
+      : null;
+    const methodLabel = d.generation_method === 'image_to_image' ? 'I2I' : 'T2I';
+    const ago         = timeAgo(d.created_at);
+
+    return `
+    <div class="design-card" data-idx="${idx}" onclick="openLightbox(${idx})">
+      <div class="card-img-wrap">
+        <img class="lazy"
+             data-src="${esc(thumb)}"
+             src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'/%3E"
+             alt="${esc(d.contest_title || 'Design')}">
+      </div>
+
+      <!-- Bottom info (always visible) -->
+      <div class="px-3 pt-2.5 pb-3 space-y-1.5">
+        <p class="text-sm font-medium text-primary truncate" title="${esc(d.contest_title || '')}">
+          ${esc(d.contest_title || 'Untitled Contest')}
+        </p>
+        <div class="flex flex-wrap items-center gap-1.5">
+          ${prize
+            ? `<span class="px-1.5 py-0.5 rounded text-[10px] font-semibold
+                            bg-accent/15 text-accent">${esc(prize)}</span>`
+            : ''}
+          <span class="px-1.5 py-0.5 rounded-full text-[10px] font-medium
+                        ${statusClass(d.status)}">${d.status}</span>
+          <span class="px-1.5 py-0.5 rounded text-[10px] font-medium
+                        bg-surface border border-border text-muted">${methodLabel}</span>
+        </div>
+        <p class="text-[10px] text-muted">Generated ${esc(ago)}</p>
+      </div>
+
+      <!-- Hover overlay -->
+      <div class="card-overlay">
+        <p class="text-sm font-semibold text-white leading-snug truncate">
+          ${esc(d.contest_title || 'Untitled Contest')}
+        </p>
+        <button class="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                       bg-white/10 hover:bg-white/20 text-white text-xs font-medium
+                       border border-white/20 transition-colors">
+          <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12"
+               viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+          View Full
+        </button>
+      </div>
+    </div>`;
+  }).join('');
+
+  // Lazy-load images with IntersectionObserver
+  initLazyLoad();
+  lucide.createIcons({ nodes: [grid] });
+}
+
+function showGalleryError(msg) {
+  const grid = document.getElementById('gallery-grid');
+  const skeleton = document.getElementById('skeleton-cards');
+  if (skeleton) skeleton.remove();
+  grid.innerHTML = `
+    <div class="col-span-full py-16 text-center text-danger text-sm">
+      Failed to load designs: ${esc(msg)}
+    </div>`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lazy loading
+// ─────────────────────────────────────────────────────────────────────────────
+function initLazyLoad() {
+  if (!('IntersectionObserver' in window)) {
+    document.querySelectorAll('img.lazy').forEach(img => {
+      img.src = img.dataset.src;
+      img.classList.replace('lazy', 'loaded');
+    });
+    return;
+  }
+
+  const obs = new IntersectionObserver((entries, observer) => {
+    entries.forEach(entry => {
+      if (!entry.isIntersecting) return;
+      const img = entry.target;
+      img.src = img.dataset.src;
+      img.onload  = () => img.classList.replace('lazy', 'loaded');
+      img.onerror = () => { img.src = '/static/placeholder.png'; img.classList.replace('lazy', 'loaded'); };
+      observer.unobserve(img);
+    });
+  }, { rootMargin: '150px' });
+
+  document.querySelectorAll('img.lazy').forEach(img => obs.observe(img));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Lightbox
+// ─────────────────────────────────────────────────────────────────────────────
+function openLightbox(idx) {
+  _lbIndex = idx;
+  document.getElementById('lightbox').classList.add('open');
+  document.body.style.overflow = 'hidden';
+  populateLightbox(idx);
+}
+
+function closeLightbox() {
+  document.getElementById('lightbox').classList.remove('open');
+  document.body.style.overflow = '';
+  document.getElementById('lb-img').src = '';
+}
+
+function lbNavigate(delta) {
+  const next = _lbIndex + delta;
+  if (next < 0 || next >= _filtered.length) return;
+  _lbIndex = next;
+  populateLightbox(_lbIndex);
+}
+
+function populateLightbox(idx) {
+  const d = _filtered[idx];
+  if (!d) return;
+
+  // Prev/next arrow visibility
+  document.querySelector('.lb-arrow.prev').style.visibility = idx > 0 ? 'visible' : 'hidden';
+  document.querySelector('.lb-arrow.next').style.visibility =
+    idx < _filtered.length - 1 ? 'visible' : 'hidden';
+
+  // Full-res image
+  const lbImg = document.getElementById('lb-img');
+  lbImg.src = '';
+  lbImg.src = fullUrl(d);
+
+  // Title
+  setText('lb-title', d.contest_title || 'Untitled Contest');
+
+  // Prize
+  const prize = d.contest_prize
+    ? `${d.contest_currency || 'USD'} ${Number(d.contest_prize).toLocaleString()}`
+    : '—';
+  setText('lb-prize', prize);
+
+  // Win score
+  const scoreEl = document.getElementById('lb-score');
+  if (d.win_score != null) {
+    const pct = Math.round(d.win_score * 100);
+    scoreEl.textContent = `${pct}%`;
+    scoreEl.className   = `text-base font-bold ${
+      pct >= 70 ? 'text-success' : pct >= 40 ? 'text-warning' : 'text-danger'}`;
+  } else {
+    scoreEl.textContent = '—';
+    scoreEl.className   = 'text-base font-bold text-muted';
+  }
+
+  // Variation
+  setText('lb-variation', d.variation_number != null ? `v${d.variation_number}` : '—');
+
+  // Status badge
+  const sb = document.getElementById('lb-status-badge');
+  sb.textContent = d.status;
+  sb.className   = `px-2 py-0.5 rounded-full text-xs font-medium ${statusClass(d.status)}`;
+
+  // Method badge
+  setText('lb-method-badge',
+    d.generation_method === 'image_to_image' ? 'Image-to-Image' : 'Text-to-Image');
+
+  // Created badge
+  setText('lb-created-badge', timeAgo(d.created_at));
+
+  // Prompt
+  const promptEl = document.getElementById('lb-prompt');
+  if (d.prompt_used) {
+    promptEl.textContent = d.prompt_used;
+  } else {
+    promptEl.textContent = '(no prompt recorded)';
+  }
+
+  // Contest link
+  const linkEl = document.getElementById('lb-contest-link');
+  linkEl.href = d.contest_url || '#';
+  linkEl.style.pointerEvents = d.contest_url ? 'auto' : 'none';
+
+  // Download button stores path
+  document.getElementById('lb-download-btn').dataset.path = fullUrl(d);
+  document.getElementById('lb-download-btn').dataset.name =
+    `design_${d.id}_v${d.variation_number || 1}.jpg`;
+}
+
+function downloadDesign() {
+  const btn  = document.getElementById('lb-download-btn');
+  const href = btn.dataset.path;
+  const name = btn.dataset.name || 'design.jpg';
+  if (!href) return;
+  const a = document.createElement('a');
+  a.href     = href;
+  a.download = name;
+  a.click();
+}
+
+// Keyboard navigation for lightbox
+document.addEventListener('keydown', e => {
+  const lb = document.getElementById('lightbox');
+  if (!lb.classList.contains('open')) return;
+  if (e.key === 'Escape')      closeLightbox();
+  if (e.key === 'ArrowLeft')   lbNavigate(-1);
+  if (e.key === 'ArrowRight')  lbNavigate(1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Socket refresh on generate complete
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('task_complete', e => {
+  if (e.detail && e.detail.type === 'generate') loadDesigns();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function thumbUrl(d) {
+  return d.thumbnail_url || d.image_url || '/static/placeholder.png';
+}
+
+function fullUrl(d) {
+  return d.image_url || d.thumbnail_url || '/static/placeholder.png';
+}
+
+function statusClass(status) {
+  const map = {
+    submitted: 'bg-success/15 text-success',
+    generated: 'bg-accent/15  text-accent',
+    failed:    'bg-danger/15  text-danger',
+  };
+  return map[status] || 'bg-muted/15 text-muted';
+}
+
+function timeAgo(isoStr) {
+  if (!isoStr) return 'unknown time ago';
+  const diff = Date.now() - new Date(isoStr);
+  const m = Math.floor(diff / 6e4);
+  if (m < 1)  return 'just now';
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} hour${h !== 1 ? 's' : ''} ago`;
+  const d = Math.floor(h / 24);
+  return `${d} day${d !== 1 ? 's' : ''} ago`;
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+loadDesigns();
+lucide.createIcons();
+</script>
+{% endblock %}

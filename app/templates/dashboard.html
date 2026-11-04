@@ -1,0 +1,1218 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — ContestBot{% endblock %}
+{% block page_title %}Dashboard{% endblock %}
+
+{% block head %}
+<style>
+  /* Stat card hover lift */
+  .stat-card { transition: transform .15s ease, box-shadow .15s ease; }
+  .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,.4); }
+
+  /* Skeleton shimmer */
+  @keyframes shimmer {
+    from { background-position: -600px 0; }
+    to   { background-position:  600px 0; }
+  }
+  .skeleton {
+    background: linear-gradient(90deg, #12141f 25%, #1e2030 50%, #12141f 75%);
+    background-size: 600px 100%;
+    animation: shimmer 1.4s infinite;
+    border-radius: 6px;
+  }
+
+  /* Slide-in detail panel */
+  #detail-panel {
+    transform: translateX(100%);
+    transition: transform .25s cubic-bezier(.4,0,.2,1);
+  }
+  #detail-panel.open { transform: translateX(0); }
+
+  /* Status badge colours */
+  .badge-pending    { background: rgba(100,116,139,.15); color:#64748b; }
+  .badge-analyzing  { background: rgba(79,110,247,.15);  color:#4f6ef7; }
+  .badge-generating { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .badge-submitting { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .badge-submitted  { background: rgba(34,197,94,.15);   color:#22c55e; }
+  .badge-failed     { background: rgba(239,68,68,.15);   color:#ef4444; }
+  .badge-skipped    { background: rgba(100,116,139,.15); color:#64748b; }
+  /* blocked = waiting on the AI account (credits/key), not a contest fault */
+  .badge-blocked    { background: rgba(245,158,11,.18);  color:#f59e0b; }
+
+  /* Win-score pill colours */
+  .ws-high   { background: rgba(34,197,94,.15);   color:#22c55e; }
+  .ws-mid    { background: rgba(245,158,11,.15);  color:#f59e0b; }
+  .ws-low    { background: rgba(239,68,68,.15);   color:#ef4444; }
+  .ws-none   { background: rgba(100,116,139,.10); color:#64748b; }
+
+  /* Table row hover */
+  #contest-tbody tr:hover { background: rgba(255,255,255,.025); cursor: pointer; }
+
+  /* Detail panel scrollbar slim */
+  #detail-panel { scrollbar-width: thin; scrollbar-color: #1e2030 transparent; }
+
+  /* Bulk action bar — slides down when 1+ rows selected */
+  #bulk-bar {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height .2s ease, margin-bottom .2s ease;
+    margin-bottom: 0;
+  }
+  #bulk-bar.open {
+    max-height: 80px;
+    margin-bottom: 1rem;
+  }
+
+  /* Per-row action dropdown */
+  .row-menu {
+    position: absolute;
+    right: 0;
+    top: calc(100% + 4px);
+    min-width: 220px;
+    background: #0a0c14;
+    border: 1px solid #1e2030;
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 8px 24px rgba(0,0,0,.5);
+    z-index: 30;
+  }
+  .row-menu button,
+  .row-menu .menu-item {
+    width: 100%; text-align: left;
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: .75rem;
+    color: #e2e8f0;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    display: flex; align-items: center; gap: .5rem;
+  }
+  .row-menu button:hover { background: rgba(79,110,247,.12); color: #4f6ef7; }
+  .row-menu .menu-item.danger:hover { background: rgba(239,68,68,.12); color: #ef4444; }
+  .row-menu .menu-section {
+    font-size: .625rem;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    padding: 6px 10px 2px;
+  }
+  .row-menu .menu-sep {
+    height: 1px;
+    background: #1e2030;
+    margin: 4px 0;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- ── Stat cards ──────────────────────────────────────────────────────────── -->
+<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+
+  <!-- Total Contests -->
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Total Contests</p>
+        <p id="stat-total" class="text-3xl font-bold text-primary">—</p>
+      </div>
+      <span class="p-2 bg-accent/10 rounded-lg">
+        <i data-lucide="layers" class="w-5 h-5 text-accent"></i>
+      </span>
+    </div>
+  </div>
+
+  <!-- Pending / In Progress -->
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Pending / Active</p>
+        <p id="stat-active" class="text-3xl font-bold text-warning">—</p>
+      </div>
+      <span class="p-2 bg-warning/10 rounded-lg">
+        <i data-lucide="clock" class="w-5 h-5 text-warning"></i>
+      </span>
+    </div>
+  </div>
+
+  <!-- Designs Generated -->
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Designs Generated</p>
+        <p id="stat-designs" class="text-3xl font-bold text-accent">—</p>
+      </div>
+      <span class="p-2 bg-accent/10 rounded-lg">
+        <i data-lucide="image" class="w-5 h-5 text-accent"></i>
+      </span>
+    </div>
+  </div>
+
+  <!-- Submitted -->
+  <div class="stat-card bg-surface border border-border rounded-xl p-5">
+    <div class="flex items-start justify-between">
+      <div>
+        <p class="text-xs text-muted uppercase tracking-wider mb-1">Submitted</p>
+        <p id="stat-submitted" class="text-3xl font-bold text-success">—</p>
+      </div>
+      <span class="p-2 bg-success/10 rounded-lg">
+        <i data-lucide="check-circle" class="w-5 h-5 text-success"></i>
+      </span>
+    </div>
+  </div>
+
+</div>
+
+<!-- ── Action buttons ──────────────────────────────────────────────────────── -->
+<div class="flex flex-wrap gap-3 mb-6">
+
+  <div class="flex items-stretch">
+    <button id="btn-fetch"
+            onclick="triggerAction('fetch')"
+            class="action-btn flex items-center gap-2 px-4 py-2.5 rounded-lg
+                   bg-surface border border-border text-sm font-medium text-primary
+                   hover:border-accent hover:text-accent transition-all duration-150
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      <span class="btn-spinner hidden">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+      </span>
+      <span class="btn-icon"><i data-lucide="refresh-cw" class="w-4 h-4"></i></span>
+      <span class="btn-label">Fetch New Contests</span>
+    </button>
+    <button id="btn-fetch-stop"
+            onclick="stopAction('fetch')"
+            title="Stop fetch"
+            class="stop-btn hidden ml-1 px-2.5 py-2.5 rounded-lg border border-danger/40
+                   text-danger hover:bg-danger/10 transition-colors">
+      <i data-lucide="square" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <div class="flex items-stretch">
+    <button id="btn-start"
+            onclick="triggerAction('start')"
+            class="action-btn flex items-center gap-2 px-4 py-2.5 rounded-lg
+                   bg-accent text-white text-sm font-medium
+                   hover:bg-accent/90 transition-all duration-150
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      <span class="btn-spinner hidden">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+      </span>
+      <span class="btn-icon"><i data-lucide="play" class="w-4 h-4"></i></span>
+      <span class="btn-label">Start Bot</span>
+    </button>
+    <button id="btn-start-stop"
+            onclick="stopAction('start')"
+            title="Stop bot pipeline"
+            class="stop-btn hidden ml-1 px-2.5 py-2.5 rounded-lg border border-danger/40
+                   text-danger hover:bg-danger/10 transition-colors">
+      <i data-lucide="square" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <div class="flex items-stretch">
+    <button id="btn-submit"
+            onclick="triggerAction('submit')"
+            class="action-btn flex items-center gap-2 px-4 py-2.5 rounded-lg
+                   bg-surface border border-border text-sm font-medium text-primary
+                   hover:border-success hover:text-success transition-all duration-150
+                   disabled:opacity-40 disabled:cursor-not-allowed">
+      <span class="btn-spinner hidden">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+      </span>
+      <span class="btn-icon"><i data-lucide="upload" class="w-4 h-4"></i></span>
+      <span class="btn-label">Run Submissions</span>
+    </button>
+    <button id="btn-submit-stop"
+            onclick="stopAction('submit')"
+            title="Stop submissions"
+            class="stop-btn hidden ml-1 px-2.5 py-2.5 rounded-lg border border-danger/40
+                   text-danger hover:bg-danger/10 transition-colors">
+      <i data-lucide="square" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <button id="btn-stop-all"
+          onclick="stopAllActions()"
+          title="Stop every running task: Fetch, Start Bot, Run Submissions"
+          class="ml-auto flex items-center gap-2 px-3 py-2.5 rounded-lg
+                 border border-danger/40 text-danger text-sm font-medium
+                 hover:bg-danger/10 transition-colors">
+    <i data-lucide="ban" class="w-4 h-4"></i>
+    Stop All
+  </button>
+
+  <button id="btn-clear-stuck"
+          onclick="clearStuckTasks()"
+          title="Purge the queue and reset contests stuck in analyzing/generating"
+          class="hidden flex items-center gap-2 px-3 py-2.5 rounded-lg
+                 border border-warning/40 text-warning text-sm font-medium
+                 hover:bg-warning/10 transition-colors">
+    <i data-lucide="trash-2" class="w-4 h-4"></i>
+    Clear Stuck Tasks
+  </button>
+
+</div>
+
+<!-- ── Bulk action bar (visible only when 1+ rows selected) ────────────────── -->
+<div id="bulk-bar"
+     class="rounded-xl border border-accent/30 bg-accent/5 flex items-center gap-3 px-4">
+  <span class="flex items-center gap-2 text-sm text-primary py-3">
+    <i data-lucide="check-square" class="w-4 h-4 text-accent"></i>
+    <span id="selectedCount" class="font-semibold">0</span>
+    <span class="text-muted">contests selected</span>
+  </span>
+
+  <div class="flex-1"></div>
+
+  <select id="bulk-status-select"
+          onchange="onBulkStatusChange(this)"
+          class="px-3 py-1.5 rounded-lg border border-border text-sm
+                 bg-bg text-primary focus:outline-none focus:border-accent
+                 focus:ring-2 focus:ring-accent/20">
+    <option value="">Change Status…</option>
+    <option value="pending">↩ Reset to Pending</option>
+    <option value="submitting">⏩ Mark as Submitting</option>
+    <option value="generating">⏩ Mark as Generating</option>
+    <option value="submitted">⏭ Mark as Submitted</option>
+    <option value="failed">❌ Mark as Failed</option>
+    <option value="skipped">🚫 Mark as Skipped</option>
+  </select>
+
+  <button onclick="deleteContests(getSelectedIds())"
+          class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
+                 border border-danger/40 text-danger text-sm hover:bg-danger/10
+                 transition-colors">
+    <i data-lucide="trash-2" class="w-4 h-4"></i>
+    Delete Selected
+  </button>
+
+  <button onclick="clearSelection()"
+          title="Clear selection"
+          class="p-1.5 rounded-lg text-muted hover:text-primary hover:bg-white/5
+                 transition-colors">
+    <i data-lucide="x" class="w-4 h-4"></i>
+  </button>
+</div>
+
+<!-- ── Contests table ──────────────────────────────────────────────────────── -->
+<div class="bg-surface border border-border rounded-xl overflow-hidden">
+
+  <!-- Filters bar -->
+  <div class="flex flex-wrap items-center gap-3 px-4 py-3 border-b border-border">
+    <div class="relative flex-1 min-w-48">
+      <i data-lucide="search"
+         class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted pointer-events-none"></i>
+      <input id="search-input"
+             type="text"
+             placeholder="Search contests…"
+             oninput="onFilterChange()"
+             class="w-full pl-9 pr-3 py-2 rounded-lg border border-border text-sm
+                    bg-bg text-primary placeholder:text-muted focus:outline-none
+                    focus:border-accent focus:ring-2 focus:ring-accent/20">
+    </div>
+
+    <select id="status-filter"
+            onchange="onFilterChange()"
+            class="px-3 py-2 rounded-lg border border-border text-sm
+                   bg-bg text-primary focus:outline-none focus:border-accent
+                   focus:ring-2 focus:ring-accent/20">
+      <option value="all">All Statuses</option>
+      <option value="pending">Pending</option>
+      <option value="analyzing">Analyzing</option>
+      <option value="generating">Generating</option>
+      <option value="submitting">Submitting</option>
+      <option value="submitted">Submitted</option>
+      <option value="failed">Failed</option>
+      <option value="skipped">Skipped</option>
+      <option value="blocked">Blocked</option>
+    </select>
+
+    <span id="contest-count" class="text-xs text-muted ml-auto whitespace-nowrap"></span>
+  </div>
+
+  <!-- Table -->
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="text-xs text-muted uppercase tracking-wider border-b border-border">
+          <th class="px-3 py-3 text-center font-medium w-8">
+            <input type="checkbox" id="selectAll"
+                   onclick="onSelectAllToggle(this)"
+                   class="align-middle accent-accent">
+          </th>
+          <th class="px-4 py-3 text-left font-medium">Title</th>
+          <th class="px-4 py-3 text-right font-medium">Prize</th>
+          <th class="px-4 py-3 text-right font-medium">Time Left</th>
+          <th class="px-4 py-3 text-right font-medium">Entries</th>
+          <th class="px-4 py-3 text-center font-medium">Win Score</th>
+          <th class="px-4 py-3 text-center font-medium">Status</th>
+          <th class="px-4 py-3 text-center font-medium">Actions</th>
+        </tr>
+      </thead>
+      <tbody id="contest-tbody">
+        <!-- Skeleton rows while loading -->
+        <tr id="skeleton-row" class="border-b border-border/50">
+          <td class="px-3 py-3 text-center"><div class="skeleton h-4 w-4 rounded mx-auto"></div></td>
+          <td class="px-4 py-3"><div class="skeleton h-4 w-48 rounded"></div></td>
+          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-12 rounded ml-auto"></div></td>
+          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-16 rounded ml-auto"></div></td>
+          <td class="px-4 py-3 text-right"><div class="skeleton h-4 w-8 rounded ml-auto"></div></td>
+          <td class="px-4 py-3 text-center"><div class="skeleton h-5 w-12 rounded-full mx-auto"></div></td>
+          <td class="px-4 py-3 text-center"><div class="skeleton h-5 w-20 rounded-full mx-auto"></div></td>
+          <td class="px-4 py-3 text-center"><div class="skeleton h-6 w-16 rounded mx-auto"></div></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Pagination -->
+  <div id="pagination" class="flex items-center justify-between px-4 py-3 border-t border-border text-xs text-muted hidden">
+    <button id="page-prev"
+            onclick="changePage(-1)"
+            class="flex items-center gap-1 px-2 py-1 rounded hover:text-primary
+                   disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+      <i data-lucide="chevron-left" class="w-3 h-3"></i> Prev
+    </button>
+    <span id="page-info"></span>
+    <button id="page-next"
+            onclick="changePage(1)"
+            class="flex items-center gap-1 px-2 py-1 rounded hover:text-primary
+                   disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+      Next <i data-lucide="chevron-right" class="w-3 h-3"></i>
+    </button>
+  </div>
+
+</div>
+
+<!-- ── Overlay (closes panel on click) ─────────────────────────────────────── -->
+<div id="panel-overlay"
+     onclick="closeDetail()"
+     class="fixed inset-0 bg-black/40 z-30 hidden backdrop-blur-sm"></div>
+
+<!-- ── Contest detail slide panel ─────────────────────────────────────────── -->
+<aside id="detail-panel"
+       class="fixed top-0 right-0 h-screen w-full max-w-[480px] z-40
+              bg-surface border-l border-border overflow-y-auto flex flex-col">
+
+  <!-- Panel header -->
+  <div class="flex items-start justify-between gap-3 px-5 py-4 border-b border-border flex-shrink-0">
+    <div class="min-w-0">
+      <h2 id="panel-title" class="text-base font-semibold text-primary truncate">Loading…</h2>
+      <a id="panel-url" href="#" target="_blank"
+         class="text-xs text-accent hover:underline truncate block mt-0.5">—</a>
+    </div>
+    <button onclick="closeDetail()"
+            class="p-1.5 rounded-lg hover:bg-white/5 text-muted hover:text-primary
+                   flex-shrink-0 transition-colors mt-0.5">
+      <i data-lucide="x" class="w-4 h-4"></i>
+    </button>
+  </div>
+
+  <!-- Panel body -->
+  <div id="panel-body" class="flex-1 px-5 py-4 space-y-5">
+
+    <!-- Meta row -->
+    <div class="grid grid-cols-3 gap-3 text-center">
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p class="text-lg font-bold text-primary" id="panel-prize">—</p>
+        <p class="text-xs text-muted mt-0.5">Prize</p>
+      </div>
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p class="text-lg font-bold text-primary" id="panel-entries">—</p>
+        <p class="text-xs text-muted mt-0.5">Entries</p>
+      </div>
+      <div class="bg-bg border border-border rounded-lg p-3">
+        <p id="panel-score-display" class="text-lg font-bold">—</p>
+        <p class="text-xs text-muted mt-0.5">Win Score</p>
+      </div>
+    </div>
+
+    <!-- Status + deadline -->
+    <div class="flex items-center justify-between text-sm">
+      <div class="flex items-center gap-2">
+        <span class="text-muted">Status:</span>
+        <span id="panel-status" class="px-2 py-0.5 rounded-full text-xs font-medium">—</span>
+      </div>
+      <div class="text-right">
+        <span class="text-muted text-xs">Deadline: </span>
+        <span id="panel-deadline" class="text-xs text-primary">—</span>
+      </div>
+    </div>
+
+    <!-- Skills -->
+    <div id="panel-skills-wrap" class="hidden">
+      <h3 class="text-xs text-muted uppercase tracking-wider mb-2">Skills</h3>
+      <div id="panel-skills" class="flex flex-wrap gap-1.5"></div>
+    </div>
+
+    <!-- Description -->
+    <div>
+      <h3 class="text-xs text-muted uppercase tracking-wider mb-2">Description</h3>
+      <p id="panel-desc" class="text-sm text-primary leading-relaxed max-h-32 overflow-y-auto
+                                 scrollbar-thin pr-1">—</p>
+    </div>
+
+    <!-- Designs thumbnails -->
+    <div id="panel-designs-wrap">
+      <h3 class="text-xs text-muted uppercase tracking-wider mb-2">Generated Designs</h3>
+      <div id="panel-designs" class="flex gap-2 overflow-x-auto pb-1"></div>
+    </div>
+
+    <!-- Recent logs -->
+    <div id="panel-logs-wrap">
+      <h3 class="text-xs text-muted uppercase tracking-wider mb-2">Recent Activity</h3>
+      <div id="panel-logs" class="space-y-1 max-h-48 overflow-y-auto pr-1"></div>
+    </div>
+
+  </div>
+
+  <!-- Panel footer actions -->
+  <div class="px-5 py-4 border-t border-border flex-shrink-0 flex gap-2">
+    <a id="panel-open-link" href="#" target="_blank"
+       class="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+              border border-border text-sm text-muted hover:text-primary
+              hover:border-primary/50 transition-colors">
+      <i data-lucide="external-link" class="w-4 h-4"></i> Open Contest
+    </a>
+    <button id="panel-analyze-btn"
+            onclick="panelAction('analyze')"
+            class="flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                   border border-accent/40 text-accent text-sm
+                   hover:bg-accent/10 transition-colors">
+      <i data-lucide="brain" class="w-4 h-4"></i> Analyze
+    </button>
+    <button id="panel-generate-btn"
+            onclick="panelAction('generate')"
+            class="flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                   border border-warning/40 text-warning text-sm
+                   hover:bg-warning/10 transition-colors">
+      <i data-lucide="image-plus" class="w-4 h-4"></i> Generate
+    </button>
+    <button id="panel-submit-btn"
+            onclick="panelAction('submit')"
+            class="hidden flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                   bg-success/15 border border-success/30 text-success text-sm
+                   hover:bg-success/25 transition-colors">
+      <i data-lucide="send" class="w-4 h-4"></i> Submit Now
+    </button>
+  </div>
+
+</aside>
+
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+let _currentPage = 1;
+let _totalPages  = 1;
+let _activeContestId = null;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stats
+// ─────────────────────────────────────────────────────────────────────────────
+function applyDashboardStats(data) {
+  const active = (data.pending || 0) + (data.analyzing || 0)
+               + (data.generating || 0) + (data.submitting || 0);
+  setText('stat-total',     data.total        ?? '—');
+  setText('stat-active',    active            ?? '—');
+  setText('stat-designs',   data.total_designs ?? '—');
+  setText('stat-submitted', data.submitted     ?? '—');
+  syncButtonStates(data.bot_status || {});
+}
+
+window.addEventListener('stats_updated', e => applyDashboardStats(e.detail));
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Button spinner / disabled state
+// ─────────────────────────────────────────────────────────────────────────────
+// `flags` is the list of bot_status keys that mean "this action is running".
+// "start" covers both analyze_contest and generate_designs (the pipeline).
+const BTN_MAP = {
+  fetch:  { id: 'btn-fetch',  flags: ['fetch_running'] },
+  start:  { id: 'btn-start',  flags: ['analyze_running', 'generate_running'] },
+  submit: { id: 'btn-submit', flags: ['submit_running'] },
+};
+
+// Tracks when each flag first transitioned to running, so we can detect
+// tasks stuck for more than STUCK_THRESHOLD_MS and surface the cleanup button.
+const STUCK_THRESHOLD_MS = 10 * 60 * 1000;   // 10 minutes
+const _runningSince = {};                    // flag -> timestamp(ms) | null
+
+function syncButtonStates(bot_status) {
+  Object.entries(BTN_MAP).forEach(([key, { id, flags }]) => {
+    const btn  = document.getElementById(id);
+    const stop = document.getElementById(`${id}-stop`);
+    if (!btn) return;
+    const running = flags.some(f => !!bot_status[f]);
+
+    btn.disabled = running;
+    btn.querySelector('.btn-spinner').classList.toggle('hidden', !running);
+    btn.querySelector('.btn-icon').classList.toggle('hidden', running);
+    if (stop) stop.classList.toggle('hidden', !running);
+  });
+
+  // Track per-flag run duration so we can offer cleanup for stuck tasks.
+  const now = Date.now();
+  let anyStuck = false;
+  Object.values(BTN_MAP).forEach(({ flags }) => {
+    flags.forEach(f => {
+      if (bot_status[f]) {
+        if (!_runningSince[f]) _runningSince[f] = now;
+        if (now - _runningSince[f] > STUCK_THRESHOLD_MS) anyStuck = true;
+      } else {
+        _runningSince[f] = null;
+      }
+    });
+  });
+  const clearBtn = document.getElementById('btn-clear-stuck');
+  if (clearBtn) clearBtn.classList.toggle('hidden', !anyStuck);
+}
+
+async function clearStuckTasks() {
+  if (!confirm('Purge the Celery queue and mark contests stuck in analyzing/generating as failed?')) return;
+  try {
+    const r = await fetch('/api/admin/clear-failed-tasks', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(`Cleared ${d.cleared_contests} stuck contest(s); queue ${d.queue_flushed ? 'flushed' : 'flush failed'}.`, 'warning');
+    Object.keys(_runningSince).forEach(k => _runningSince[k] = null);
+    refreshStats();
+    loadContests(_currentPage);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function triggerAction(action) {
+  const endpoints = { fetch: '/api/fetch', start: '/api/start', submit: '/api/submit' };
+  const ep = endpoints[action];
+  if (!ep) return;
+
+  try {
+    const r = await fetch(ep, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || d.message || r.statusText);
+    showToast(d.message || 'Task queued.', 'success');
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function stopAction(action) {
+  try {
+    const r = await fetch(`/api/stop/${action}`, { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(d.message || 'Stop signal sent.', 'warning');
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function stopAllActions() {
+  const ok = await showConfirmModal(
+    'Stop all running tasks?',
+    'This kills Fetch, Start Bot, and Run Submissions and drains the queue. ' +
+    'Any task currently running (e.g. mid-scrape or mid-generation) will be terminated.',
+    'Stop all',
+  );
+  if (!ok) return;
+  const btn = document.getElementById('btn-stop-all');
+  if (btn) btn.disabled = true;
+  try {
+    const r = await fetch('/api/stop/all', { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(d.message || 'Stop signal sent to all tasks.', 'warning');
+    Object.keys(_runningSince).forEach(k => _runningSince[k] = null);
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Contests table
+// ─────────────────────────────────────────────────────────────────────────────
+async function loadContests(page = 1) {
+  _currentPage = page;
+  const search = document.getElementById('search-input').value.trim();
+  const status = document.getElementById('status-filter').value;
+
+  const params = new URLSearchParams({ page, status });
+  if (search) params.set('search', search);
+
+  try {
+    const r = await fetch(`/api/contests?${params}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    _totalPages = d.pages || 1;
+    renderContests(d.contests, d.total);
+    renderPagination(d.current_page, d.pages, d.total);
+  } catch (err) {
+    renderError(err.message);
+  }
+}
+
+function renderContests(contests, total) {
+  const tbody = document.getElementById('contest-tbody');
+  const count = document.getElementById('contest-count');
+  count.textContent = `${total} contest${total !== 1 ? 's' : ''}`;
+
+  if (!contests.length) {
+    tbody.innerHTML = `
+      <tr><td colspan="8" class="px-4 py-10 text-center text-muted text-sm">
+        No contests found.
+      </td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = contests.map(c => `
+    <tr class="border-b border-border/50 transition-colors"
+        data-id="${c.id}" data-title="${esc(c.title || '')}"
+        onclick="onRowClick(event, ${c.id})">
+      <td class="px-3 py-3 text-center" onclick="event.stopPropagation()">
+        <input type="checkbox" class="contest-checkbox align-middle accent-accent"
+               value="${c.id}" onchange="updateBulkBar()">
+      </td>
+      <td class="px-4 py-3">
+        <div class="flex items-center gap-2 min-w-0">
+          ${c.has_attachments
+            ? `<i data-lucide="paperclip" class="w-3 h-3 text-muted flex-shrink-0"></i>`
+            : ''}
+          <span class="text-sm text-primary truncate max-w-xs"
+                title="${esc(c.title || '')}${c.skills ? '\n\nSkills: ' + esc(c.skills) : ''}">
+            ${esc(c.title || '—')}
+          </span>
+        </div>
+        ${c.skills
+          ? `<span class="text-xs text-muted truncate max-w-xs block" title="${esc(c.skills)}">${esc(c.skills)}</span>`
+          : ''}
+        ${c.designs_count
+          ? `<span class="text-xs text-muted">${c.designs_count} design${c.designs_count !== 1 ? 's' : ''}</span>`
+          : ''}
+      </td>
+      <td class="px-4 py-3 text-right font-medium text-primary whitespace-nowrap">
+        ${c.prize ? `${c.currency || 'USD'} ${Number(c.prize).toLocaleString()}` : '—'}
+      </td>
+      <td class="px-4 py-3 text-right text-muted text-xs whitespace-nowrap">
+        ${c.deadline ? timeLeft(c.deadline) : '—'}
+      </td>
+      <td class="px-4 py-3 text-right text-muted text-xs">
+        ${c.entries_count ?? '—'}
+      </td>
+      <td class="px-4 py-3 text-center">
+        ${winScorePill(c.win_score)}
+      </td>
+      <td class="px-4 py-3 text-center">
+        <span class="status-cell px-2 py-0.5 rounded-full text-xs font-medium badge-${c.status}">
+          ${c.status}
+        </span>
+      </td>
+      <td class="px-4 py-3 text-center relative" onclick="event.stopPropagation()">
+        <button onclick="toggleRowMenu(event, ${c.id})"
+                class="px-2.5 py-1 rounded-lg text-xs border border-border
+                       text-muted hover:text-primary hover:border-primary/40
+                       transition-colors inline-flex items-center gap-1">
+          View
+          <i data-lucide="chevron-down" class="w-3 h-3"></i>
+        </button>
+        <div id="row-menu-${c.id}" class="row-menu hidden">
+          <button onclick="openDetail(${c.id}); closeRowMenus()">
+            <i data-lucide="eye" class="w-3.5 h-3.5"></i> View Details
+          </button>
+          <div class="menu-sep"></div>
+          <div class="menu-section">Change Status</div>
+          <button onclick="changeStatus(${c.id}, 'pending'); closeRowMenus()">
+            <span>↩</span> Reset to Pending
+          </button>
+          <button onclick="changeStatus(${c.id}, 'submitting'); closeRowMenus()">
+            <span>⏩</span> Mark as Submitting
+          </button>
+          <button onclick="changeStatus(${c.id}, 'submitted'); closeRowMenus()">
+            <span>⏭</span> Mark as Submitted
+          </button>
+          <button onclick="changeStatus(${c.id}, 'failed'); closeRowMenus()">
+            <span>❌</span> Mark as Failed
+          </button>
+          <button onclick="changeStatus(${c.id}, 'skipped'); closeRowMenus()">
+            <span>🚫</span> Mark as Skipped
+          </button>
+          <div class="menu-sep"></div>
+          <button class="menu-item danger"
+                  onclick="deleteSingle(${c.id}, this.closest('tr').dataset.title); closeRowMenus()">
+            <i data-lucide="trash-2" class="w-3.5 h-3.5"></i> Delete
+          </button>
+        </div>
+      </td>
+    </tr>
+  `).join('');
+
+  lucide.createIcons({ nodes: [tbody] });
+}
+
+function renderError(msg) {
+  document.getElementById('contest-tbody').innerHTML = `
+    <tr><td colspan="7" class="px-4 py-10 text-center text-danger text-sm">
+      Failed to load contests: ${esc(msg)}
+    </td></tr>`;
+}
+
+function renderPagination(page, pages, total) {
+  const wrap = document.getElementById('pagination');
+  if (pages <= 1) { wrap.classList.add('hidden'); return; }
+  wrap.classList.remove('hidden');
+  lucide.createIcons({ nodes: [wrap] });
+
+  document.getElementById('page-info').textContent = `Page ${page} of ${pages}`;
+  document.getElementById('page-prev').disabled = (page <= 1);
+  document.getElementById('page-next').disabled = (page >= pages);
+}
+
+function changePage(delta) {
+  const next = _currentPage + delta;
+  if (next < 1 || next > _totalPages) return;
+  loadContests(next);
+}
+
+// Filter inputs are debounced
+let _filterTimer = null;
+function onFilterChange() {
+  clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(() => loadContests(1), 300);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Detail panel
+// ─────────────────────────────────────────────────────────────────────────────
+function openDetail(contestId) {
+  _activeContestId = contestId;
+  document.getElementById('detail-panel').classList.add('open');
+  document.getElementById('panel-overlay').classList.remove('hidden');
+  loadDetail(contestId);
+}
+
+function closeDetail() {
+  _activeContestId = null;
+  document.getElementById('detail-panel').classList.remove('open');
+  document.getElementById('panel-overlay').classList.add('hidden');
+}
+
+async function loadDetail(id) {
+  // Reset
+  setText('panel-title',   'Loading…');
+  setText('panel-url',     '—');
+  setText('panel-prize',   '—');
+  setText('panel-entries', '—');
+  setText('panel-deadline','—');
+  setText('panel-desc',    '—');
+  document.getElementById('panel-designs').innerHTML = '';
+  document.getElementById('panel-logs').innerHTML    = '';
+  document.getElementById('panel-submit-btn').classList.add('hidden');
+
+  try {
+    const r = await fetch(`/api/contests/${id}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const c = await r.json();
+    renderDetail(c);
+  } catch (err) {
+    setText('panel-title', 'Error loading contest');
+    showToast(`Detail load failed: ${err.message}`, 'error');
+  }
+}
+
+function renderDetail(c) {
+  // Header
+  setText('panel-title', c.title || '—');
+  const urlEl = document.getElementById('panel-url');
+  urlEl.textContent = c.url || '—';
+  urlEl.href = c.url || '#';
+
+  // Open link
+  document.getElementById('panel-open-link').href = c.url || '#';
+
+  // Meta
+  setText('panel-prize',
+    c.prize ? `${c.currency || 'USD'} ${Number(c.prize).toLocaleString()}` : '—');
+  setText('panel-entries', c.entries_count ?? '—');
+  setText('panel-deadline', c.deadline ? fmtDate(c.deadline) : '—');
+
+  // Win score
+  const scoreEl = document.getElementById('panel-score-display');
+  if (c.win_score != null) {
+    const pct   = Math.round(c.win_score * 100);
+    const color = pct >= 70 ? 'text-success' : pct >= 40 ? 'text-warning' : 'text-danger';
+    scoreEl.textContent  = `${pct}%`;
+    scoreEl.className    = `text-lg font-bold ${color}`;
+  } else {
+    scoreEl.textContent = '—';
+    scoreEl.className   = 'text-lg font-bold text-muted';
+  }
+
+  // Status badge
+  const statusEl = document.getElementById('panel-status');
+  statusEl.textContent = c.status;
+  statusEl.className   = `px-2 py-0.5 rounded-full text-xs font-medium badge-${c.status}`;
+
+  // Skills
+  const skillsWrap = document.getElementById('panel-skills-wrap');
+  const skillsBox  = document.getElementById('panel-skills');
+  const skillList  = (c.skills || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (skillList.length) {
+    skillsBox.innerHTML = skillList.map(s =>
+      `<span class="px-2 py-0.5 rounded-full text-xs bg-surface border border-border text-primary">${esc(s)}</span>`
+    ).join('');
+    skillsWrap.classList.remove('hidden');
+  } else {
+    skillsWrap.classList.add('hidden');
+    skillsBox.innerHTML = '';
+  }
+
+  // Description
+  setText('panel-desc', c.description || 'No description available.');
+
+  // Designs thumbnails
+  const designsEl = document.getElementById('panel-designs');
+  if (c.designs && c.designs.length) {
+    designsEl.innerHTML = c.designs.map(d => `
+      <div class="flex-shrink-0 relative group">
+        <img src="${d.thumbnail_url || d.image_url || '/static/placeholder.png'}"
+             onerror="this.src='/static/placeholder.png'"
+             class="w-20 h-20 object-cover rounded-lg border border-border
+                    group-hover:border-accent/50 transition-colors"
+             title="Variation ${d.variation_number}">
+        <span class="absolute bottom-1 right-1 text-[9px] px-1 rounded
+                     ${d.status === 'submitted' ? 'bg-success/80' : 'bg-black/60'} text-white">
+          ${d.status === 'submitted' ? '✓' : `v${d.variation_number}`}
+        </span>
+      </div>
+    `).join('');
+    document.getElementById('panel-designs-wrap').classList.remove('hidden');
+  } else {
+    designsEl.innerHTML = '<p class="text-xs text-muted">No designs yet.</p>';
+  }
+
+  // Logs
+  const logsEl = document.getElementById('panel-logs');
+  const LOG_COLORS = {
+    INFO: 'text-muted', SUCCESS: 'text-success',
+    WARNING: 'text-warning', ERROR: 'text-danger',
+  };
+  if (c.logs && c.logs.length) {
+    logsEl.innerHTML = c.logs.map(l => `
+      <div class="flex items-start gap-2 text-xs py-1">
+        <span class="flex-shrink-0 ${LOG_COLORS[l.level] || 'text-muted'}
+                     uppercase font-medium w-14">${l.level}</span>
+        <span class="text-muted flex-shrink-0">${fmtDate(l.created_at)}</span>
+        <span class="text-primary leading-tight">${esc(l.message)}</span>
+      </div>
+    `).join('');
+  } else {
+    logsEl.innerHTML = '<p class="text-xs text-muted">No activity yet.</p>';
+  }
+
+  // Submit Now button
+  if (c.status === 'submitting') {
+    document.getElementById('panel-submit-btn').classList.remove('hidden');
+  }
+}
+
+async function panelAction(action) {
+  if (!_activeContestId) return;
+  const endpoints = {
+    analyze:  `/api/contests/${_activeContestId}/analyze`,
+    generate: `/api/contests/${_activeContestId}/generate`,
+    submit:   `/api/contests/${_activeContestId}/submit`,
+  };
+  try {
+    const r = await fetch(endpoints[action], { method: 'POST' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    showToast(`${action} task queued.`, 'success');
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Socket refresh
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('task_complete', e => {
+  loadContests(_currentPage);
+  if (_activeContestId) loadDetail(_activeContestId);
+});
+
+window.addEventListener('manual_review_needed', e => {
+  const d = e.detail || {};
+  const n = d.designs_count || 0;
+  showToast(
+    `🎨 ${n} design${n === 1 ? '' : 's'} ready for contest #${d.contest_id}` +
+    ` — review and submit manually from the Dashboard.`,
+    'warning',
+  );
+  refreshStats();
+  loadContests(_currentPage);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function winScorePill(score) {
+  if (score == null) return `<span class="px-2 py-0.5 rounded-full text-xs ws-none">—</span>`;
+  const pct = Math.round(score * 100);
+  const cls = pct >= 70 ? 'ws-high' : pct >= 40 ? 'ws-mid' : 'ws-low';
+  return `<span class="px-2 py-0.5 rounded-full text-xs font-medium ${cls}">${pct}%</span>`;
+}
+
+function timeLeft(isoStr) {
+  if (!isoStr) return '—';
+  const diff = new Date(isoStr) - Date.now();
+  if (diff <= 0) return '<span class="text-danger">Expired</span>';
+  const h = Math.floor(diff / 36e5);
+  const d = Math.floor(h / 24);
+  if (d > 0) return `${d}d ${h % 24}h`;
+  return `${h}h ${Math.floor((diff % 36e5) / 6e4)}m`;
+}
+
+function fmtDate(isoStr) {
+  if (!isoStr) return '—';
+  return new Date(isoStr).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+  });
+}
+
+function basename(path) {
+  if (!path) return '';
+  return path.split(/[\\/]/).pop();
+}
+
+function setText(id, val) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Row click — open detail unless the user clicked inside a no-propagation zone
+// ─────────────────────────────────────────────────────────────────────────────
+function onRowClick(event, id) {
+  // Ignore if the click bubbled from a checkbox cell or the actions cell
+  // (both already call event.stopPropagation()).
+  openDetail(id);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Checkbox management — bulk selection
+// ─────────────────────────────────────────────────────────────────────────────
+function updateBulkBar() {
+  const checked = document.querySelectorAll('.contest-checkbox:checked');
+  const bar     = document.getElementById('bulk-bar');
+  const count   = document.getElementById('selectedCount');
+  if (count) count.textContent = checked.length;
+  if (!bar) return;
+  bar.classList.toggle('open', checked.length > 0);
+
+  // Keep the header checkbox in sync (checked when all visible are checked,
+  // indeterminate when some).
+  const all = document.querySelectorAll('.contest-checkbox');
+  const head = document.getElementById('selectAll');
+  if (head) {
+    head.checked       = all.length > 0 && checked.length === all.length;
+    head.indeterminate = checked.length > 0 && checked.length < all.length;
+  }
+}
+
+function onSelectAllToggle(box) {
+  document.querySelectorAll('.contest-checkbox').forEach(cb => { cb.checked = box.checked; });
+  updateBulkBar();
+}
+
+function getSelectedIds() {
+  return [...document.querySelectorAll('.contest-checkbox:checked')]
+    .map(cb => parseInt(cb.value, 10))
+    .filter(n => !Number.isNaN(n));
+}
+
+function clearSelection() {
+  document.querySelectorAll('.contest-checkbox').forEach(cb => { cb.checked = false; });
+  const head = document.getElementById('selectAll');
+  if (head) { head.checked = false; head.indeterminate = false; }
+  updateBulkBar();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-row action menu
+// ─────────────────────────────────────────────────────────────────────────────
+function toggleRowMenu(event, id) {
+  event.stopPropagation();
+  const menu = document.getElementById(`row-menu-${id}`);
+  if (!menu) return;
+  const wasOpen = !menu.classList.contains('hidden');
+  closeRowMenus();
+  if (!wasOpen) {
+    menu.classList.remove('hidden');
+    lucide.createIcons({ nodes: [menu] });
+  }
+}
+
+function closeRowMenus() {
+  document.querySelectorAll('.row-menu').forEach(m => m.classList.add('hidden'));
+}
+
+// Close any open row menu on outside click
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.row-menu') && !e.target.closest('button[onclick^="toggleRowMenu"]')) {
+    closeRowMenus();
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Delete (single + bulk)
+// ─────────────────────────────────────────────────────────────────────────────
+async function deleteSingle(contestId, title) {
+  const safeTitle = title || `Contest #${contestId}`;
+  const confirmed = await showConfirmModal(
+    'Delete Contest?',
+    `"${safeTitle}" and all of its designs and attachments will be permanently deleted. This cannot be undone.`,
+  );
+  if (!confirmed) return;
+
+  try {
+    const r = await fetch(`/api/contests/${contestId}`, { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || r.statusText);
+    showToast(`"${d.title}" deleted.`, 'success');
+    if (_activeContestId === contestId) closeDetail();
+    loadContests(_currentPage);
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function deleteContests(ids) {
+  if (!ids || !ids.length) return;
+  const confirmed = await showConfirmModal(
+    `Delete ${ids.length} contest${ids.length !== 1 ? 's' : ''}?`,
+    `You are about to permanently delete ${ids.length} contest${ids.length !== 1 ? 's' : ''} and all associated designs and attachments. This cannot be undone.`,
+  );
+  if (!confirmed) return;
+
+  try {
+    const r = await fetch('/api/contests/bulk', {
+      method:  'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ ids }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || r.statusText);
+    const failedNote = (d.failed && d.failed.length)
+      ? ` (${d.failed.length} failed)`
+      : '';
+    showToast(`Deleted ${d.deleted_count} contest(s)${failedNote}.`, 'success');
+    clearSelection();
+    loadContests(_currentPage);
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Status change (single + bulk)
+// ─────────────────────────────────────────────────────────────────────────────
+async function changeStatus(contestId, newStatus) {
+  try {
+    const r = await fetch(`/api/contests/${contestId}/status`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ status: newStatus }),
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || r.statusText);
+    if (d.noop) {
+      showToast(`Already ${newStatus}.`, 'info');
+      return;
+    }
+    showToast(`Status: ${d.old_status} → ${d.new_status}`, 'success');
+    updateRowStatus(contestId, newStatus);
+    refreshStats();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function onBulkStatusChange(select) {
+  const status = select.value;
+  select.value = '';   // reset back to placeholder
+  if (!status) return;
+  await changeBulkStatus(status);
+}
+
+async function changeBulkStatus(newStatus) {
+  const ids = getSelectedIds();
+  if (!ids.length) return;
+
+  let ok = 0;
+  for (const id of ids) {
+    try {
+      const r = await fetch(`/api/contests/${id}/status`, {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ status: newStatus }),
+      });
+      const d = await r.json();
+      if (d.success) {
+        ok++;
+        updateRowStatus(id, newStatus);
+      }
+    } catch (_) { /* swallow, summarised below */ }
+  }
+  showToast(`Updated ${ok}/${ids.length} contest(s) to "${newStatus}".`,
+            ok === ids.length ? 'success' : 'warning');
+  clearSelection();
+  refreshStats();
+}
+
+function updateRowStatus(contestId, newStatus) {
+  const row = document.querySelector(`tr[data-id="${contestId}"]`);
+  if (!row) return;
+  const cell = row.querySelector('.status-cell');
+  if (cell) {
+    cell.textContent = newStatus;
+    cell.className   = `status-cell px-2 py-0.5 rounded-full text-xs font-medium badge-${newStatus}`;
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Socket listener for status changes pushed from the server.
+// (base.html bridges the raw socket event into a CustomEvent on window.)
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('contest_updated', e => {
+  const d = e.detail;
+  if (d && d.id != null && d.status) updateRowStatus(d.id, d.status);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+loadContests(1);
+refreshStats();
+lucide.createIcons();
+</script>
+{% endblock %}

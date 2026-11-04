@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}ContestBot{% endblock %}</title>
+  <link rel="icon" type="image/x-icon"
+        href="{{ url_for('static', filename='favicon.ico') }}?v=2">
+  <link rel="shortcut icon" type="image/x-icon"
+        href="{{ url_for('static', filename='favicon.ico') }}?v=2">
+  <link rel="apple-touch-icon"
+        href="{{ url_for('static', filename='img/icon.png') }}?v=3">
+
+  <!-- Inter font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            bg:       '#0a0c14',
+            surface:  '#12141f',
+            border:   '#1e2030',
+            accent:   '#4f6ef7',
+            success:  '#22c55e',
+            warning:  '#f59e0b',
+            danger:   '#ef4444',
+            primary:  '#e2e8f0',
+            muted:    '#64748b',
+          },
+          fontFamily: { sans: ['Inter', 'ui-sans-serif', 'system-ui'] },
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide icons -->
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+
+  <style>
+    body { background-color: #0a0c14; color: #e2e8f0; font-family: 'Inter', sans-serif; }
+
+    /* Sidebar active link */
+    .nav-link.active { background: rgba(79,110,247,.15); color: #4f6ef7; }
+    .nav-link.active svg { color: #4f6ef7; }
+    .nav-link:not(.active):hover { background: rgba(255,255,255,.04); }
+
+    /* Phones: the sidebar slides over the page instead of taking half of it */
+    #sidebar-overlay, #sidebar-toggle { display: none; }
+    @media (max-width: 767px) {
+      #app-sidebar {
+        position: fixed; left: 0; top: 0; z-index: 45;
+        transform: translateX(-100%); transition: transform .2s ease;
+      }
+      #app-sidebar.open { transform: translateX(0); box-shadow: 0 0 40px rgba(0,0,0,.6); }
+      #sidebar-overlay.open { display: block; position: fixed; inset: 0; z-index: 44; background: rgba(0,0,0,.5); }
+      #sidebar-toggle { display: inline-flex; }
+      main { padding: 1rem !important; }
+    }
+
+    /* Pulsing dot for running state */
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: .6; transform: scale(1.35); }
+    }
+    .pulse { animation: pulse-dot 1.4s ease-in-out infinite; }
+
+    /* Toast slide-in */
+    @keyframes slide-in {
+      from { transform: translateX(110%); opacity: 0; }
+      to   { transform: translateX(0);   opacity: 1; }
+    }
+    .toast { animation: slide-in .25s ease-out; }
+
+    /* Thin scrollbar */
+    ::-webkit-scrollbar       { width: 5px; height: 5px; }
+    ::-webkit-scrollbar-track { background: #12141f; }
+    ::-webkit-scrollbar-thumb { background: #1e2030; border-radius: 99px; }
+
+    /* Custom checkbox / select resets */
+    select, input[type="text"], input[type="number"],
+    input[type="url"], input[type="password"], textarea {
+      background: #0a0c14 !important;
+      border-color: #1e2030 !important;
+      color: #e2e8f0 !important;
+    }
+    select:focus, input:focus, textarea:focus {
+      border-color: #4f6ef7 !important;
+      outline: none !important;
+      box-shadow: 0 0 0 2px rgba(79,110,247,.2) !important;
+    }
+  </style>
+
+  {% block head %}{% endblock %}
+</head>
+
+<body class="h-full flex overflow-hidden">
+
+  <!-- ── Sidebar ──────────────────────────────────────────────────────────── -->
+  <div id="sidebar-overlay" onclick="toggleSidebar(false)"></div>
+  <aside id="app-sidebar" class="w-60 flex-shrink-0 flex flex-col border-r border-border bg-surface h-screen sticky top-0">
+
+    <!-- Logo -->
+    <div class="px-5 py-5 border-b border-border">
+      <a href="/" class="block group">
+        <img src="{{ url_for('static', filename='img/growmza_logo.png') }}?v=3"
+             alt="Growmza"
+             class="h-10 w-auto max-w-full object-contain
+                    group-hover:opacity-90 transition-opacity">
+      </a>
+    </div>
+
+    <!-- Nav links -->
+    <nav class="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+      {% set nav_items = [
+        ('/',         'Dashboard', 'layout-dashboard'),
+        ('/projects', 'Projects',  'briefcase'),
+        ('/gallery',  'Gallery',   'images'),
+        ('/logs',     'Logs',      'terminal'),
+        ('/ai-agents','AI Agents', 'bot'),
+        ('/settings', 'Settings',  'settings'),
+      ] %}
+      {% for href, label, icon in nav_items %}
+      <a href="{{ href }}"
+         class="nav-link {% if request.path == href %}active{% endif %}
+                flex items-center gap-3 px-3 py-2.5 rounded-lg
+                text-sm font-medium text-muted transition-all duration-150 cursor-pointer">
+        <i data-lucide="{{ icon }}" class="w-4 h-4 flex-shrink-0"></i>
+        {{ label }}
+      </a>
+      {% endfor %}
+    </nav>
+
+    <!-- Active workspace -->
+    <div class="px-4 py-3 border-t border-border">
+      <p class="text-[10px] uppercase tracking-wider text-muted mb-1">Workspace</p>
+      <div class="flex items-center justify-between gap-2">
+        <span id="active-space-name" class="text-sm font-medium text-primary truncate">…</span>
+        <a href="/spaces" title="Switch workspace"
+           class="p-1.5 rounded-md hover:bg-white/5 text-muted hover:text-accent flex-shrink-0">
+          <i data-lucide="repeat" class="w-3.5 h-3.5"></i>
+        </a>
+      </div>
+    </div>
+
+    <!-- Cookie status (bottom of sidebar) -->
+    <div class="px-4 py-4 border-t border-border">
+      <div id="cookie-status-badge" class="flex items-center gap-2 text-xs">
+        <!-- Populated by refreshStats() -->
+        <span class="w-2 h-2 rounded-full bg-muted flex-shrink-0"></span>
+        <span class="text-muted">Checking session…</span>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ── Main area ─────────────────────────────────────────────────────────── -->
+  <div class="flex-1 flex flex-col min-w-0 overflow-hidden">
+
+    <!-- Top bar -->
+    <header class="flex items-center justify-between px-6 py-3
+                   border-b border-border bg-surface flex-shrink-0">
+      <div class="flex items-center gap-3 min-w-0">
+        <button id="sidebar-toggle" onclick="toggleSidebar()" title="Menu"
+                class="p-1 -ml-1 rounded-lg text-muted hover:text-primary transition-colors flex-shrink-0">
+          <i data-lucide="menu" class="w-5 h-5"></i>
+        </button>
+        <!-- Page title -->
+        <h1 class="text-base font-semibold text-primary truncate">
+          {% block page_title %}{% endblock %}
+        </h1>
+      </div>
+
+      <div class="flex items-center gap-5 flex-shrink-0">
+        <!-- Live clock -->
+        <span id="live-clock" class="text-xs text-muted tabular-nums hidden sm:inline"></span>
+
+        <!-- Bot running indicator -->
+        <div class="flex items-center gap-2">
+          <span id="bot-dot" class="w-2 h-2 rounded-full bg-muted flex-shrink-0"></span>
+          <span id="bot-dot-label" class="text-xs text-muted">Idle</span>
+        </div>
+
+        <!-- Logout -->
+        <button id="logout-btn" title="Log out"
+                class="flex items-center gap-1.5 text-xs text-muted hover:text-danger transition-colors">
+          <i data-lucide="log-out" class="w-4 h-4"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Flash messages (server-side, e.g. from cookie upload redirect) -->
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="px-6 pt-4 space-y-2">
+          {% for category, message in messages %}
+          <div class="flex items-start gap-3 px-4 py-3 rounded-lg text-sm
+                      {% if category == 'success' %}bg-success/10 text-success border border-success/20
+                      {% elif category == 'error'   %}bg-danger/10  text-danger  border border-danger/20
+                      {% else                        %}bg-warning/10 text-warning border border-warning/20{% endif %}">
+            <i data-lucide="{% if category == 'success' %}check-circle{% elif category == 'error' %}alert-circle{% else %}alert-triangle{% endif %}"
+               class="w-4 h-4 flex-shrink-0 mt-0.5"></i>
+            {{ message }}
+          </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <!-- Page content -->
+    <main class="flex-1 overflow-y-auto p-6">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+
+  <!-- ── Toast container ────────────────────────────────────────────────────── -->
+  <div id="toast-container"
+       class="fixed bottom-5 right-5 z-50 flex flex-col gap-2 pointer-events-none"
+       style="max-width: 360px;"></div>
+
+  <!-- ── Confirmation modal (used by deleteContests / deleteSingle) ───────── -->
+  <div id="confirmModal"
+       class="hidden fixed inset-0 z-50 flex items-center justify-center
+              bg-black/60 backdrop-blur-sm">
+    <div class="bg-surface border border-border rounded-xl p-6 max-w-md w-full mx-4 shadow-2xl">
+      <h3 id="confirmTitle" class="text-lg font-semibold text-primary mb-2"></h3>
+      <p id="confirmMessage" class="text-sm text-muted mb-6 leading-relaxed"></p>
+      <div class="flex gap-3 justify-end">
+        <button id="confirmCancel"
+                class="px-4 py-2 rounded-lg border border-border text-muted
+                       hover:text-primary hover:border-accent transition-colors text-sm">
+          Cancel
+        </button>
+        <button id="confirmOk"
+                class="px-4 py-2 rounded-lg bg-danger hover:bg-danger/85
+                       text-white font-medium transition-colors text-sm">
+          Delete
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Scripts ───────────────────────────────────────────────────────────── -->
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+
+  <script>
+  // ── Auth + Space guard (must run before any fetch / socket use) ──────────────
+  const CB_TOKEN      = localStorage.getItem('cb_auth');
+  const CB_SPACE      = localStorage.getItem('cb_space');
+  const CB_SPACE_NAME = localStorage.getItem('cb_space_name');
+  if (!CB_TOKEN) {
+    window.location.replace('/login');
+  } else if (!CB_SPACE) {
+    window.location.replace('/spaces');
+  }
+
+  // Attach auth + active-space headers to every same-origin request so the 22
+  // scattered fetch() call sites don't each need editing. Bounce to /login on a
+  // 401 (token lost or cleared).
+  (function patchFetch() {
+    const orig = window.fetch.bind(window);
+    window.fetch = async function (input, init) {
+      init = init || {};
+      const url = (typeof input === 'string') ? input : (input && input.url) || '';
+      if (url.startsWith('/') || url.startsWith(window.location.origin)) {
+        const headers = new Headers(init.headers || {});
+        if (CB_TOKEN) headers.set('X-Auth-Token', CB_TOKEN);
+        if (CB_SPACE) headers.set('X-Space-Id', CB_SPACE);
+        init.headers = headers;
+      }
+      const res = await orig(input, init);
+      if (res.status === 401) {
+        localStorage.removeItem('cb_auth');
+        window.location.replace('/login');
+      }
+      return res;
+    };
+  })();
+
+  // True when a socket event belongs to the current Space (or is global/system).
+  function _forMySpace(data) {
+    return !data || data.space_id == null || String(data.space_id) === String(CB_SPACE);
+  }
+
+  // Active workspace name + logout button.
+  (function initWorkspaceUI() {
+    const nameEl = document.getElementById('active-space-name');
+    if (nameEl) nameEl.textContent = CB_SPACE_NAME || (CB_SPACE ? ('Space #' + CB_SPACE) : '—');
+    const logoutBtn = document.getElementById('logout-btn');
+    if (logoutBtn) logoutBtn.addEventListener('click', async () => {
+      try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+      localStorage.removeItem('cb_auth');
+      localStorage.removeItem('cb_space');
+      localStorage.removeItem('cb_space_name');
+      document.cookie = 'cb_space=; path=/; max-age=0; samesite=Lax';
+      window.location.replace('/login');
+    });
+  })();
+
+  // ── Live clock ──────────────────────────────────────────────────────────────
+  (function tickClock() {
+    const el = document.getElementById('live-clock');
+    function update() {
+      if (!el) return;
+      el.textContent = new Date().toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      });
+    }
+    update();
+    setInterval(update, 1000);
+  })();
+
+  // ── Confirmation modal (Promise-based) ──────────────────────────────────────
+  // Resolves to true if user clicks Ok, false on Cancel / Esc / backdrop click.
+  // `okLabel` defaults to "Delete" but callers can pass a different verb.
+  function toggleSidebar(open) {
+    const sidebar = document.getElementById('app-sidebar');
+    const show = open === undefined ? !sidebar.classList.contains('open') : open;
+    sidebar.classList.toggle('open', show);
+    document.getElementById('sidebar-overlay').classList.toggle('open', show);
+  }
+
+  function showConfirmModal(title, message, okLabel = 'Delete') {
+    const modal   = document.getElementById('confirmModal');
+    const okBtn   = document.getElementById('confirmOk');
+    const cancel  = document.getElementById('confirmCancel');
+    if (!modal) return Promise.resolve(false);
+
+    document.getElementById('confirmTitle').textContent   = title;
+    document.getElementById('confirmMessage').textContent = message;
+    okBtn.textContent = okLabel;
+    modal.classList.remove('hidden');
+
+    return new Promise(resolve => {
+      const cleanup = (result) => {
+        modal.classList.add('hidden');
+        okBtn.onclick   = null;
+        cancel.onclick  = null;
+        modal.onclick   = null;
+        document.removeEventListener('keydown', onKey);
+        resolve(result);
+      };
+      const onKey = (e) => { if (e.key === 'Escape') cleanup(false); };
+      okBtn.onclick   = () => cleanup(true);
+      cancel.onclick  = () => cleanup(false);
+      modal.onclick   = (e) => { if (e.target === modal) cleanup(false); };
+      document.addEventListener('keydown', onKey);
+    });
+  }
+
+  // ── Toast ───────────────────────────────────────────────────────────────────
+  function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const colors = {
+      success: 'bg-success/10 border-success/30 text-success',
+      error:   'bg-danger/10  border-danger/30  text-danger',
+      warning: 'bg-warning/10 border-warning/30 text-warning',
+      info:    'bg-accent/10  border-accent/30  text-accent',
+    };
+    const icons = {
+      success: 'check-circle',
+      error:   'alert-circle',
+      warning: 'alert-triangle',
+      info:    'info',
+    };
+
+    const toast = document.createElement('div');
+    toast.className = `toast pointer-events-auto flex items-start gap-3
+                       px-4 py-3 rounded-lg border text-sm backdrop-blur-sm
+                       ${colors[type] || colors.info}`;
+    toast.innerHTML = `
+      <i data-lucide="${icons[type] || 'info'}"
+         class="w-4 h-4 flex-shrink-0 mt-0.5"></i>
+      <span class="flex-1 leading-snug">${message}</span>
+      <button onclick="this.closest('.toast').remove()"
+              class="opacity-50 hover:opacity-100 ml-1 flex-shrink-0">
+        <i data-lucide="x" class="w-3 h-3"></i>
+      </button>`;
+    container.appendChild(toast);
+    lucide.createIcons({ nodes: [toast] });
+
+    // Auto-remove after 5 s
+    setTimeout(() => toast.remove(), 5000);
+  }
+
+  // ── Stats refresh ───────────────────────────────────────────────────────────
+  // Debounced: many socket events (new_log, task_status, task_complete) can
+  // fire in rapid succession when dozens of tasks finish at once. Without
+  // debouncing each one would trigger a full /api/stats GET — observed at
+  // ~10/sec during a retry storm. The 500 ms window coalesces bursts into a
+  // single request while still feeling instant for one-off user clicks.
+  let _statsRefreshTimer = null;
+  function refreshStats() {
+    if (_statsRefreshTimer) clearTimeout(_statsRefreshTimer);
+    _statsRefreshTimer = setTimeout(_doRefreshStats, 500);
+  }
+
+  function _doRefreshStats() {
+    _statsRefreshTimer = null;
+    fetch('/api/stats')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (!data) return;
+        _applyStats(data);
+      })
+      .catch(() => {});
+  }
+
+  function _applyStats(data) {
+    // Bot running dot
+    const running = data.bot_status &&
+      Object.values(data.bot_status).some(Boolean);
+    const dot   = document.getElementById('bot-dot');
+    const label = document.getElementById('bot-dot-label');
+    if (dot) {
+      dot.className = running
+        ? 'w-2 h-2 rounded-full bg-success flex-shrink-0 pulse'
+        : 'w-2 h-2 rounded-full bg-muted flex-shrink-0';
+    }
+    if (label) {
+      label.textContent = running ? 'Running' : 'Idle';
+      label.className   = running ? 'text-xs text-success' : 'text-xs text-muted';
+    }
+
+    // Cookie status badge (sidebar)
+    const badge = document.getElementById('cookie-status-badge');
+    if (badge) {
+      const status = data.cookie_status || 'none';
+      const cfg = {
+        active:   { dot: 'bg-success', text: 'text-success',        label: 'Session Active' },
+        uploaded: { dot: 'bg-warning', text: 'text-warning',        label: 'Cookies Uploaded' },
+        expired:  { dot: 'bg-danger',  text: 'text-danger',         label: 'Session Expired' },
+        none:     { dot: 'bg-muted',   text: 'text-muted',          label: 'No Session' },
+      };
+      const c = cfg[status] || cfg.none;
+      const fixLink = (status === 'expired' || status === 'none')
+        ? `&nbsp;<a href="/settings" class="underline opacity-70 hover:opacity-100">Fix →</a>` : '';
+      badge.innerHTML = `
+        <span class="w-2 h-2 rounded-full ${c.dot} flex-shrink-0${status === 'active' ? ' pulse' : ''}"></span>
+        <span class="${c.text}">${c.label}${fixLink}</span>`;
+    }
+
+    // Dispatch for other pages to consume
+    window.dispatchEvent(new CustomEvent('stats_updated', { detail: data }));
+  }
+
+  // ── SocketIO ────────────────────────────────────────────────────────────────
+  const socket = io({ transports: ['websocket', 'polling'] });
+
+  socket.on('connect', () => {
+    refreshStats();
+  });
+
+  socket.on('new_log', (data) => {
+    if (!_forMySpace(data)) return;
+    // Relay to any page that listens (e.g. logs.html live feed)
+    window.dispatchEvent(new CustomEvent('new_log', { detail: data }));
+
+    // Toast only for ERROR and SUCCESS so info spam doesn't overwhelm
+    if (data.level === 'ERROR')   showToast(data.message, 'error');
+    if (data.level === 'SUCCESS') showToast(data.message, 'success');
+  });
+
+  socket.on('task_complete', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('task_complete', { detail: data }));
+    refreshStats();
+
+    // Completion toast.
+    // An operation is never announced as "complete" AND "error" at once: the
+    // emitted `status` (completed | skipped | blocked | failed) picks the verb,
+    // so a billing stop reads "Analysis blocked — …", not the old misleading
+    // "🧠 Analysis complete — error: Analysis returned None".
+    const subjects = {
+      fetch:       ['🔍', 'Fetch'],
+      analyze:     ['🧠', 'Analysis'],
+      generate:    ['🎨', 'Generation'],
+      submit:      ['📤', 'Submission'],
+      analyze_all: ['🚀', 'Pipeline'],
+      project_fetch:       ['💼', 'Project fetch'],
+      project_analyze:     ['🧠', 'Project analysis'],
+      project_analyze_all: ['🚀', 'Project analysis'],
+      project_regenerate:  ['✍️', 'Proposal rewrite'],
+      project_submit:      ['📤', 'Proposal submission'],
+    };
+    const [icon, subject] = subjects[data.type] || ['', 'Task'];
+    const started = data.type === 'analyze_all' || data.type === 'project_analyze_all';
+
+    // Derive the state from `status`, falling back to the presence of an error
+    // so events emitted by older workers still read correctly.
+    const status = data.status || (data.error ? 'failed' : 'completed');
+    const verbs = {
+      completed: started ? 'started' : 'complete',
+      skipped:   'skipped',
+      blocked:   'blocked',
+      failed:    'failed',
+      retrying:  'retrying',
+    };
+    const tones = {
+      completed: 'success', skipped: 'info', blocked: 'warning',
+      failed: 'error', retrying: 'warning',
+    };
+    const headline = `${icon} ${subject} ${verbs[status] || 'complete'}`.trim();
+    const detail = data.error || data.note || '';
+    showToast(detail ? `${headline} — ${detail}` : headline,
+              tones[status] || 'info');
+  });
+
+  socket.on('task_status', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('task_status', { detail: data }));
+    refreshStats();
+    // Paced submissions wait between entries with the worker free — say so,
+    // otherwise a 5-minute gap reads as "Run Submissions does nothing".
+    if (data.status === 'waiting' && data.next_in) {
+      const what = data.task === 'project_submit' ? 'bid' : 'contest entry';
+      const mins = (data.next_in / 60).toFixed(1);
+      showToast(`⏱ Next ${what} in ${mins} min — ${data.remaining} left`, 'info');
+    }
+  });
+
+  socket.on('contest_updated', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('contest_updated', { detail: data }));
+  });
+
+  socket.on('project_updated', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('project_updated', { detail: data }));
+  });
+
+  socket.on('project_progress', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('project_progress', { detail: data }));
+  });
+
+  socket.on('manual_review_needed', (data) => {
+    if (!_forMySpace(data)) return;
+    window.dispatchEvent(new CustomEvent('manual_review_needed', { detail: data }));
+  });
+
+  socket.on('config_error', (data) => {
+    if (!_forMySpace(data)) return;
+    const msg = data && data.message ? data.message : 'Configuration error';
+    const redirect = data && data.redirect ? data.redirect : null;
+    if (redirect) {
+      showToast(`${msg} — <a href="${redirect}" class="underline">Open settings →</a>`, 'error');
+    } else {
+      showToast(msg, 'error');
+    }
+  });
+
+  // ── Periodic refresh ────────────────────────────────────────────────────────
+  setInterval(refreshStats, 30_000);
+
+  // ── Lucide icons ────────────────────────────────────────────────────────────
+  lucide.createIcons();
+  </script>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

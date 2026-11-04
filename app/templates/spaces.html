@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Workspaces · ContestBot</title>
+  <link rel="icon" type="image/x-icon"
+        href="{{ url_for('static', filename='favicon.ico') }}?v=2">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <style>
+    body { background-color:#0a0c14; color:#e2e8f0; font-family:'Inter',sans-serif; }
+    input { background:#0a0c14 !important; border-color:#1e2030 !important; color:#e2e8f0 !important; }
+    input:focus { border-color:#4f6ef7 !important; outline:none !important;
+                  box-shadow:0 0 0 2px rgba(79,110,247,.2) !important; }
+    ::-webkit-scrollbar { width:5px; height:5px; }
+    ::-webkit-scrollbar-thumb { background:#1e2030; border-radius:99px; }
+  </style>
+</head>
+<body class="h-full">
+
+  <div class="max-w-5xl mx-auto px-6 py-8">
+
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-8">
+      <div class="flex items-center gap-3">
+        <img src="{{ url_for('static', filename='img/growmza_logo.png') }}?v=3"
+             alt="Growmza" class="h-9 w-auto object-contain">
+        <div>
+          <h1 class="text-lg font-semibold">Workspaces</h1>
+          <p class="text-xs text-[#64748b]">Choose a Space to work in, or create a new one.</p>
+        </div>
+      </div>
+      <button id="logoutBtn"
+              class="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#1e2030]
+                     text-[#64748b] hover:text-[#e2e8f0] hover:border-[#ef4444]/40 text-sm transition-colors">
+        <i data-lucide="log-out" class="w-4 h-4"></i> Log out
+      </button>
+    </div>
+
+    <!-- Create new -->
+    <form id="createForm" class="flex gap-2 mb-7">
+      <input id="newName" type="text" maxlength="120" required
+             class="flex-1 px-3 py-2.5 rounded-lg border text-sm"
+             placeholder="New Space name (e.g. Logo Contests)">
+      <button type="submit"
+              class="flex items-center gap-2 px-4 py-2.5 rounded-lg bg-[#4f6ef7]
+                     hover:bg-[#4f6ef7]/85 text-white font-medium text-sm transition-colors whitespace-nowrap">
+        <i data-lucide="plus" class="w-4 h-4"></i> Create Space
+      </button>
+    </form>
+
+    <!-- Grid -->
+    <div id="spacesGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+      <!-- cards injected here -->
+    </div>
+    <p id="emptyState" class="hidden text-center text-sm text-[#64748b] py-16">
+      No Spaces yet — create your first one above.
+    </p>
+  </div>
+
+  <script>
+    const token = localStorage.getItem('cb_auth');
+    if (!token) window.location.replace('/login');
+
+    function authHeaders(extra) {
+      return Object.assign({ 'X-Auth-Token': token || '' }, extra || {});
+    }
+
+    function setCookie(name, value) {
+      document.cookie = `${name}=${value}; path=/; max-age=31536000; samesite=Lax`;
+    }
+
+    function openSpace(id, name) {
+      // Persist selection for both XHR (header from localStorage) and full-page
+      // navigation (cb_space cookie read server-side), then enter the app.
+      localStorage.setItem('cb_space', String(id));
+      if (name) localStorage.setItem('cb_space_name', name);
+      setCookie('cb_space', id);
+      window.location.assign('/');
+    }
+
+    function esc(s) {
+      return (s || '').replace(/[&<>"']/g, c => (
+        { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+
+    async function loadSpaces() {
+      const r = await fetch('/api/spaces', { headers: authHeaders() });
+      if (r.status === 401) { window.location.replace('/login'); return; }
+      const data = await r.json();
+      const grid = document.getElementById('spacesGrid');
+      const empty = document.getElementById('emptyState');
+      const spaces = data.spaces || [];
+      grid.innerHTML = '';
+      empty.classList.toggle('hidden', spaces.length > 0);
+
+      for (const s of spaces) {
+        const card = document.createElement('div');
+        card.className = 'group bg-[#12141f] border border-[#1e2030] rounded-xl p-5 ' +
+                         'hover:border-[#4f6ef7]/50 transition-colors flex flex-col';
+        card.innerHTML = `
+          <div class="flex items-start justify-between mb-3">
+            <div class="w-10 h-10 rounded-lg bg-[#4f6ef7]/15 flex items-center justify-center">
+              <i data-lucide="layout-grid" class="w-5 h-5 text-[#4f6ef7]"></i>
+            </div>
+            <div class="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button title="Rename" data-act="rename" data-id="${s.id}" data-name="${esc(s.name)}"
+                      class="p-1.5 rounded-md hover:bg-white/5 text-[#64748b] hover:text-[#e2e8f0]">
+                <i data-lucide="pencil" class="w-3.5 h-3.5 pointer-events-none"></i></button>
+              <button title="Delete" data-act="delete" data-id="${s.id}" data-name="${esc(s.name)}"
+                      class="p-1.5 rounded-md hover:bg-[#ef4444]/10 text-[#64748b] hover:text-[#ef4444]">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5 pointer-events-none"></i></button>
+            </div>
+          </div>
+          <h3 class="font-semibold text-sm mb-1 truncate">${esc(s.name)}</h3>
+          <p class="text-xs text-[#64748b] mb-4">${s.contest_count} contest(s)</p>
+          <button data-act="open" data-id="${s.id}" data-name="${esc(s.name)}"
+                  class="mt-auto w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg
+                         border border-[#1e2030] hover:bg-[#4f6ef7] hover:border-[#4f6ef7]
+                         hover:text-white text-sm font-medium transition-colors">
+            Open <i data-lucide="arrow-right" class="w-4 h-4 pointer-events-none"></i>
+          </button>`;
+        grid.appendChild(card);
+      }
+      lucide.createIcons();
+    }
+
+    // Event delegation for card actions
+    document.getElementById('spacesGrid').addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-act]');
+      if (!btn) return;
+      const { act, id, name } = btn.dataset;
+
+      if (act === 'open') {
+        openSpace(id, btn.dataset.name);
+      } else if (act === 'rename') {
+        const newName = prompt('Rename Space:', name);
+        if (!newName || newName.trim() === name) return;
+        const r = await fetch(`/api/spaces/${id}`, {
+          method: 'PATCH', headers: authHeaders({ 'Content-Type': 'application/json' }),
+          body: JSON.stringify({ name: newName.trim() }),
+        });
+        if (!r.ok) alert((await r.json()).error || 'Rename failed.');
+        loadSpaces();
+      } else if (act === 'delete') {
+        if (!confirm(`Delete Space "${name}"? This permanently removes its contests, designs, logs and settings.`)) return;
+        const r = await fetch(`/api/spaces/${id}`, { method: 'DELETE', headers: authHeaders() });
+        if (!r.ok) { alert((await r.json()).error || 'Delete failed.'); return; }
+        // If we deleted the currently-selected Space, clear the selection.
+        if (localStorage.getItem('cb_space') === String(id)) {
+          localStorage.removeItem('cb_space');
+          setCookie('cb_space', '');
+        }
+        loadSpaces();
+      }
+    });
+
+    document.getElementById('createForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('newName');
+      const name = input.value.trim();
+      if (!name) return;
+      const r = await fetch('/api/spaces', {
+        method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ name }),
+      });
+      const data = await r.json();
+      if (!r.ok) { alert(data.error || 'Create failed.'); return; }
+      input.value = '';
+      // Jump straight into the freshly-created Space.
+      openSpace(data.id, data.name);
+    });
+
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      try { await fetch('/auth/logout', { method: 'POST', headers: authHeaders() }); } catch (e) {}
+      localStorage.removeItem('cb_auth');
+      localStorage.removeItem('cb_space');
+      setCookie('cb_space', '');
+      window.location.replace('/login');
+    });
+
+    loadSpaces();
+  </script>
+</body>
+</html>

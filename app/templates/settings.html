@@ -1,0 +1,1558 @@
+{% extends "base.html" %}
+{% block title %}Settings — ContestBot{% endblock %}
+{% block page_title %}Settings{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Section card ──────────────────────────────────────────────────────────── */
+  .s-card {
+    background: #12141f;
+    border: 1px solid #1e2030;
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .s-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+    padding: 1rem 1.25rem;
+    border-bottom: 1px solid #1e2030;
+  }
+  .s-card-body { padding: 1.25rem; }
+
+  /* ── Field row ─────────────────────────────────────────────────────────────── */
+  .field-row {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    align-items: start;
+    gap: .75rem 1.25rem;
+    padding: .75rem 0;
+    border-bottom: 1px solid #1e2030;
+  }
+  .field-row:last-child { border-bottom: none; padding-bottom: 0; }
+  .field-row:first-child { padding-top: 0; }
+  .field-label {
+    font-size: .8125rem;
+    font-weight: 500;
+    color: #e2e8f0;
+    padding-top: .45rem;
+    line-height: 1.4;
+  }
+  .field-hint {
+    font-size: .6875rem;
+    color: #64748b;
+    margin-top: .25rem;
+    line-height: 1.5;
+  }
+  .field-control { display: flex; flex-direction: column; gap: .4rem; }
+
+  /* ── Inputs ────────────────────────────────────────────────────────────────── */
+  .s-input {
+    width: 100%;
+    padding: .5rem .75rem;
+    background: #0a0c14;
+    border: 1px solid #1e2030;
+    border-radius: 8px;
+    color: #e2e8f0;
+    font-size: .875rem;
+    transition: border-color .15s, box-shadow .15s;
+    outline: none;
+  }
+  .s-input:focus {
+    border-color: #4f6ef7;
+    box-shadow: 0 0 0 2px rgba(79,110,247,.2);
+  }
+  .s-input::placeholder { color: #475569; }
+  .s-input.w-32 { width: 8rem; }
+  .s-input.w-24 { width: 6rem; }
+
+  /* ── Password wrapper with show/hide ───────────────────────────────────────── */
+  .pw-wrap { position: relative; }
+  .pw-wrap .s-input { padding-right: 2.5rem; }
+  .pw-toggle {
+    position: absolute;
+    right: .625rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #64748b;
+    cursor: pointer;
+    padding: .125rem;
+    transition: color .15s;
+  }
+  .pw-toggle:hover { color: #e2e8f0; }
+
+  /* ── Secret "locked" display ───────────────────────────────────────────────── */
+  .secret-locked {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+  }
+  .secret-mask {
+    font-family: monospace;
+    color: #64748b;
+    font-size: .875rem;
+    letter-spacing: .1em;
+  }
+  .change-btn {
+    padding: .25rem .65rem;
+    border-radius: 6px;
+    font-size: .75rem;
+    font-weight: 500;
+    color: #4f6ef7;
+    border: 1px solid rgba(79,110,247,.3);
+    background: rgba(79,110,247,.08);
+    cursor: pointer;
+    transition: background .15s, border-color .15s;
+    white-space: nowrap;
+  }
+  .change-btn:hover { background: rgba(79,110,247,.18); border-color: rgba(79,110,247,.5); }
+
+  /* ── Inline save button (per-field, next to API key inputs) ─────────────── */
+  .save-btn-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .4rem .85rem;
+    border-radius: 6px;
+    background: #4f6ef7;
+    color: white;
+    font-size: .8125rem;
+    font-weight: 500;
+    border: none;
+    cursor: pointer;
+    transition: background .15s, opacity .15s;
+    white-space: nowrap;
+  }
+  .save-btn-sm:hover    { background: #3d5ce5; }
+  .save-btn-sm:disabled { opacity: .5; cursor: not-allowed; }
+  .cancel-btn-sm {
+    padding: .4rem .75rem;
+    border-radius: 6px;
+    font-size: .8125rem;
+    color: #64748b;
+    background: transparent;
+    border: 1px solid #1e2030;
+    cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  .cancel-btn-sm:hover { color: #e2e8f0; border-color: #475569; }
+
+  /* ── Radio group ───────────────────────────────────────────────────────────── */
+  .radio-group { display: flex; gap: .5rem; flex-wrap: wrap; }
+  .radio-option {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    padding: .4rem .8rem;
+    border-radius: 8px;
+    border: 1px solid #1e2030;
+    cursor: pointer;
+    font-size: .8125rem;
+    color: #64748b;
+    transition: border-color .15s, color .15s, background .15s;
+    user-select: none;
+  }
+  .radio-option input[type="radio"] { display: none; }
+  .radio-option:has(input:checked) {
+    border-color: rgba(79,110,247,.4);
+    background: rgba(79,110,247,.1);
+    color: #4f6ef7;
+  }
+  .radio-dot {
+    width: .7rem;
+    height: .7rem;
+    border-radius: 50%;
+    border: 2px solid currentColor;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .radio-option:has(input:checked) .radio-dot::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    border-radius: 50%;
+    background: #4f6ef7;
+  }
+
+  /* ── Cookie status banner ──────────────────────────────────────────────────── */
+  .cookie-banner {
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+    padding: .75rem 1rem;
+    border-radius: 8px;
+    font-size: .8125rem;
+    font-weight: 500;
+  }
+  .cookie-banner.active  { background: rgba(34,197,94,.08);  border:1px solid rgba(34,197,94,.2);  color:#22c55e; }
+  .cookie-banner.expired { background: rgba(245,158,11,.08); border:1px solid rgba(245,158,11,.2); color:#f59e0b; }
+  .cookie-banner.none    { background: rgba(239,68,68,.08);  border:1px solid rgba(239,68,68,.2);  color:#ef4444; }
+
+  /* ── Collapsible instructions ──────────────────────────────────────────────── */
+  .collapsible-toggle {
+    display: flex;
+    align-items: center;
+    gap: .4rem;
+    font-size: .75rem;
+    color: #4f6ef7;
+    cursor: pointer;
+    user-select: none;
+    padding: 0;
+    background: none;
+    border: none;
+    transition: opacity .15s;
+  }
+  .collapsible-toggle:hover { opacity: .8; }
+  .collapsible-body {
+    overflow: hidden;
+    max-height: 0;
+    transition: max-height .25s ease;
+  }
+  .collapsible-body.open { max-height: 400px; }
+  .instruction-step {
+    display: flex;
+    align-items: flex-start;
+    gap: .5rem;
+    font-size: .8125rem;
+    color: #94a3b8;
+    padding: .2rem 0;
+  }
+  .step-num {
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 50%;
+    background: rgba(79,110,247,.15);
+    color: #4f6ef7;
+    font-size: .625rem;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: .05rem;
+  }
+
+  /* ── File upload zone ──────────────────────────────────────────────────────── */
+  #cookie-drop-zone {
+    border: 2px dashed #1e2030;
+    border-radius: 10px;
+    padding: 1.5rem 1rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s;
+    position: relative;
+  }
+  #cookie-drop-zone:hover,
+  #cookie-drop-zone.dragover {
+    border-color: rgba(79,110,247,.5);
+    background: rgba(79,110,247,.04);
+  }
+  #cookie-drop-zone input[type="file"] {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* ── Save bar ──────────────────────────────────────────────────────────────── */
+  #save-bar {
+    position: sticky;
+    bottom: 0;
+    background: linear-gradient(to top, #0a0c14 80%, transparent);
+    padding: 1rem 0 .25rem;
+    display: flex;
+    align-items: center;
+    gap: .75rem;
+  }
+  .save-btn {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .6rem 1.5rem;
+    border-radius: 8px;
+    background: #4f6ef7;
+    color: white;
+    font-size: .875rem;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: background .15s, opacity .15s;
+  }
+  .save-btn:hover   { background: #3d5ce5; }
+  .save-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Toggle switch (auto_submit_enabled) ──────────────────────────────────── */
+  .toggle-switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 26px;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-slider {
+    position: absolute; inset: 0;
+    background: #1e2030;
+    border: 1px solid #2d3148;
+    border-radius: 26px;
+    cursor: pointer;
+    transition: .25s;
+  }
+  .toggle-slider::before {
+    content: "";
+    position: absolute;
+    width: 18px; height: 18px;
+    left: 3px; bottom: 3px;
+    background: #64748b;
+    border-radius: 50%;
+    transition: .25s;
+  }
+  .toggle-switch input:checked + .toggle-slider {
+    background: #1a3a1a;
+    border-color: #22c55e;
+  }
+  .toggle-switch input:checked + .toggle-slider::before {
+    background: #22c55e;
+    transform: translateX(22px);
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<div class="space-y-5 max-w-3xl pb-24">
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 1 — Freelancer Session
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">🍪 Freelancer Session</h2>
+        <p class="text-xs text-muted mt-0.5">Cookie-based authentication for freelancer.com</p>
+      </div>
+    </div>
+    <div class="s-card-body space-y-4">
+
+      <!-- Status banner -->
+      <div id="cookie-banner-local" class="cookie-banner none">
+        <i data-lucide="loader-2" class="w-4 h-4 animate-spin flex-shrink-0"></i>
+        <span id="cookie-banner-text">Checking session…</span>
+      </div>
+
+      <!-- How-to instructions (collapsible) -->
+      <div>
+        <button class="collapsible-toggle" onclick="toggleCollapsible('how-to')">
+          <i data-lucide="help-circle" class="w-3.5 h-3.5"></i>
+          How to export cookies
+          <i data-lucide="chevron-down" class="w-3 h-3 transition-transform" id="how-to-chevron"></i>
+        </button>
+        <div id="how-to" class="collapsible-body">
+          <div class="mt-3 p-4 bg-bg border border-border rounded-lg space-y-2">
+            <div class="instruction-step">
+              <span class="step-num">1</span>
+              <span>Install the <strong class="text-primary">Cookie-Editor</strong> extension for Chrome or Firefox.</span>
+            </div>
+            <div class="instruction-step">
+              <span class="step-num">2</span>
+              <span>Go to <strong class="text-primary">www.freelancer.com</strong> and log in to your account.</span>
+            </div>
+            <div class="instruction-step">
+              <span class="step-num">3</span>
+              <span>Click the Cookie-Editor icon → <strong class="text-primary">Export</strong> → <strong class="text-primary">Export as JSON</strong>.</span>
+            </div>
+            <div class="instruction-step">
+              <span class="step-num">4</span>
+              <span>Upload the downloaded <code class="text-accent bg-accent/10 px-1 rounded text-xs">.json</code> file below.</span>
+            </div>
+            <p class="text-xs text-muted pt-1">
+              Required cookies: <code class="text-accent text-xs">GETAFREE_AUTH_HASH_V2</code>,
+              <code class="text-accent text-xs">session2</code>.
+              <span class="text-muted">(<code class="text-xs">XSRF-TOKEN</code> is optional — the browser re-fetches it automatically.)</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Drop zone -->
+      <div id="cookie-drop-zone"
+           ondragover="event.preventDefault(); this.classList.add('dragover')"
+           ondragleave="this.classList.remove('dragover')"
+           ondrop="handleCookieDrop(event)">
+        <input type="file" id="cookie-file-input" accept=".json"
+               onchange="handleCookieFile(this.files[0])">
+        <div class="pointer-events-none space-y-2">
+          <i data-lucide="upload-cloud" class="w-8 h-8 text-muted mx-auto"></i>
+          <p class="text-sm font-medium text-primary">
+            Drop <span class="text-accent">freelancer.json</span> here
+          </p>
+          <p class="text-xs text-muted">or click to browse</p>
+        </div>
+      </div>
+
+      <!-- Upload result -->
+      <div id="cookie-upload-result" class="hidden text-sm rounded-lg px-4 py-2.5 border"></div>
+
+      <!-- Upload + Clear buttons -->
+      <div class="flex items-center gap-3">
+        <button id="upload-cookie-btn"
+                onclick="uploadCookies()"
+                class="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                       bg-accent text-white hover:bg-accent/90 transition-colors
+                       disabled:opacity-40 disabled:cursor-not-allowed">
+          <i data-lucide="upload" class="w-4 h-4"></i>
+          Upload Cookies
+        </button>
+        <button id="clear-cookie-btn"
+                onclick="clearCookies()"
+                class="hidden flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+                       text-danger border border-danger/30 bg-danger/8
+                       hover:bg-danger/15 transition-colors">
+          <i data-lucide="trash-2" class="w-4 h-4"></i>
+          Clear Session
+        </button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 2 — AI Agents (moved to its own page)
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">🤖 AI Agents</h2>
+        <p class="text-xs text-muted mt-0.5">
+          Providers, models and model parameters now live on their own page
+        </p>
+      </div>
+    </div>
+    <div class="s-card-body">
+      <a href="/ai-agents"
+         class="flex items-center justify-between gap-4 p-4 rounded-xl border
+                border-accent/25 bg-accent/5 hover:bg-accent/10 transition-colors">
+        <div class="flex items-start gap-3 min-w-0">
+          <i data-lucide="bot" class="w-5 h-5 text-accent flex-shrink-0 mt-0.5"></i>
+          <div class="min-w-0">
+            <div class="text-sm font-medium text-primary">Open AI Agents</div>
+            <p class="text-xs text-muted mt-1 leading-relaxed">
+              Choose one provider per task (APIDot or Kie.ai), pick the chat /
+              analysis model and the image-generation model, and configure the
+              exact parameters each model's API documents — quality, resolution,
+              background, canvas, reasoning effort and reference images.
+              API keys and connection tests live there too.
+            </p>
+          </div>
+        </div>
+        <i data-lucide="arrow-right" class="w-4 h-4 text-accent flex-shrink-0"></i>
+      </a>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 3 — Scraper Config
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">🕷 Scraper Config</h2>
+        <p class="text-xs text-muted mt-0.5">Where and how to scrape contests</p>
+      </div>
+    </div>
+    <div class="s-card-body">
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Target URL</div>
+          <div class="field-hint">Page numbers are appended automatically</div>
+        </div>
+        <div class="field-control">
+          <input type="url" name="target_url" id="field-target_url"
+                 class="s-input"
+                 placeholder="https://www.freelancer.com/search/contests?contestSort=latest&contestSkills=20&page=">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Pages to Scrape</div>
+          <div class="field-hint">Listing pages per fetch session (1–10)</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="pages_to_scrape" id="field-pages_to_scrape"
+                 class="s-input w-24" min="1" max="10" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Server Host URL</div>
+          <div class="field-hint">Public base URL used to build reference image links</div>
+        </div>
+        <div class="field-control">
+          <input type="url" name="server_host" id="field-server_host"
+                 class="s-input"
+                 placeholder="http://localhost:5000">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 4 — Bot Behavior
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">⚙️ Bot Behavior</h2>
+        <p class="text-xs text-muted mt-0.5">Submission limits and human-like timing</p>
+      </div>
+    </div>
+    <div class="s-card-body">
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Auto Submit After Generation</div>
+          <div class="field-hint">
+            When enabled, designs are submitted automatically once generation finishes.
+            Disable to review on the Dashboard before clicking <b>Run Submissions</b>.
+          </div>
+        </div>
+        <div class="field-control">
+          <div class="flex items-center gap-3">
+            <label class="toggle-switch">
+              <input type="checkbox" id="field-auto_submit_enabled"
+                     name="auto_submit_enabled" onchange="onAutoSubmitToggle()">
+              <span class="toggle-slider"></span>
+            </label>
+            <span id="autoSubmitLabel" class="text-sm text-muted">Disabled</span>
+          </div>
+          <div id="autoSubmitWarning"
+               class="hidden mt-2 px-3 py-2 rounded-lg text-xs"
+               style="background:#2d1f00; border:1px solid #f59e0b; color:#fbbf24;">
+            ⚠️ Auto-submit is disabled. After generation, open the Dashboard
+            and click <b>Run Submissions</b> to submit manually.
+          </div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Designs Per Contest</div>
+          <div class="field-hint">Variations to generate (1–5). More variations = more kie.ai credits used.</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="designs_per_contest" id="field-designs_per_contest"
+                 class="s-input w-24" min="1" max="5" step="1"
+                 oninput="onDesignsCountInput()">
+          <div id="creditCostHint" class="field-hint mt-1">
+            💳 ~<span id="creditsPerContest">30</span> kie.ai credits per contest
+            (10 × <span id="variationsCount">3</span> variations)
+          </div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">AI Art Director</div>
+          <div class="field-hint">An AI art director rewrites each variation's prompt into a
+            vivid, craft-focused brief before generation (composition, typography, color, lighting).</div>
+        </div>
+        <div class="field-control">
+          <select name="prompt_enhancer_enabled" id="field-prompt_enhancer_enabled"
+                  class="s-input w-40">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Design Critic</div>
+          <div class="field-hint">Scores every generated design against the brief;
+            the highest-scoring design is the one submitted.</div>
+        </div>
+        <div class="field-control">
+          <select name="design_critic_enabled" id="field-design_critic_enabled"
+                  class="s-input w-40">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Auto-Refine Threshold</div>
+          <div class="field-hint">If every design scores below this (0–100), one extra
+            corrective design is generated from the critic's feedback. 0 = off.
+            Costs ~10 extra credits when triggered.</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="critic_regen_threshold" id="field-critic_regen_threshold"
+                 class="s-input w-24" min="0" max="100" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Submissions</div>
+          <div class="field-hint">Per session (1–20)</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="max_submissions_per_session"
+                 id="field-max_submissions_per_session"
+                 class="s-input w-24" min="1" max="20" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Interval Between Entries (minutes)</div>
+          <div class="field-hint">
+            Wait this long between two contest submissions (default 5). The bot
+            keeps analysing and generating while it waits. 0 = no pause.
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="submission_interval_minutes"
+                 id="field-submission_interval_minutes"
+                 class="s-input w-24" min="0" max="1440" step="0.5">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">AI Use Declaration</div>
+          <div class="field-hint">
+            Freelancer requires every entry to declare how AI was used, and
+            disqualifies inaccurate declarations. This bot's designs are made by
+            the image model, so "AI generated" is the accurate answer; choose
+            "AI assisted" only if you rework designs yourself before they are
+            submitted. "No AI" is not offered.
+          </div>
+        </div>
+        <div class="field-control">
+          <select name="submission_ai_declaration" id="field-submission_ai_declaration"
+                  class="s-input w-40">
+            <option value="full">AI generated</option>
+            <option value="partial">AI assisted</option>
+          </select>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 5 — Filters
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">🎯 Contest Filters</h2>
+        <p class="text-xs text-muted mt-0.5">Skip contests that don't meet these criteria</p>
+      </div>
+    </div>
+    <div class="s-card-body">
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Minimum Prize ($)</div>
+          <div class="field-hint">Skip contests below this prize value</div>
+        </div>
+        <div class="field-control">
+          <div class="flex items-center gap-2">
+            <span class="text-muted text-sm">$</span>
+            <input type="number" name="min_prize_filter" id="field-min_prize_filter"
+                   class="s-input w-24" min="0" step="1">
+          </div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Entries</div>
+          <div class="field-hint">Skip if contest already has more entries than this</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="max_entries_filter" id="field-max_entries_filter"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Contest Age (hours)</div>
+          <div class="field-hint">Only scrape contests posted within this many hours · 0 = no age limit (scrape all)</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="max_contest_age_hours" id="field-max_contest_age_hours"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 6 — Projects / Proposals
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">💼 Projects / Proposals</h2>
+        <p class="text-xs text-muted mt-0.5">Normal-project discovery, analysis, pricing and bid submission</p>
+      </div>
+    </div>
+    <div class="s-card-body">
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Project Search URL</div>
+          <div class="field-hint">Freelancer /search/projects URL — filters (skills, languages, type) are kept; page numbers are handled automatically</div>
+        </div>
+        <div class="field-control">
+          <input type="url" name="project_search_url" id="field-project_search_url"
+                 class="s-input"
+                 placeholder="https://www.freelancer.com/search/projects?projectSkills=…&projectLanguages=en&types=fixed">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Search Pages to Read</div>
+          <div class="field-hint">Newest first, 20 projects per page (1–50) · a run takes seconds</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_pages_to_fetch" id="field-project_pages_to_fetch"
+                 class="s-input w-24" min="1" max="50" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Analyses per Run</div>
+          <div class="field-hint">Most projects sent to AI analysis automatically after a fetch, freshest first — protects your AI credits; the rest wait for the next run · 0 = no limit</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_detail_batch_cap" id="field-project_detail_batch_cap"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Project Age (hours)</div>
+          <div class="field-hint">Skip projects older than this · 0 = no limit</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_max_age_hours" id="field-project_max_age_hours"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Minimum Budget ($)</div>
+          <div class="field-hint">Skip projects whose max budget is below this</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_min_budget" id="field-project_min_budget"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Accepted Languages</div>
+          <div class="field-hint">Comma-separated codes (en,es,fr) · empty = all</div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="project_languages" id="field-project_languages"
+                 class="s-input w-48" placeholder="en,es,fr">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Accepted Fields</div>
+          <div class="field-hint">
+            Which kinds of work to bid on: <code>design</code>, <code>programming</code>,
+            <code>marketing</code>. A project qualifies on its subject matter, not on
+            matching your profile's exact skill list.
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="project_accepted_domains" id="field-project_accepted_domains"
+                 class="s-input w-64" placeholder="design,programming,marketing">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Excluded Fields</div>
+          <div class="field-hint">
+            Never bid on these: <code>video</code> (editing/After Effects),
+            <code>3d</code> (modelling/rendering), <code>planning</code>
+            (AutoCAD/architectural plans). Beats an accepted field.
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="project_excluded_domains" id="field-project_excluded_domains"
+                 class="s-input w-64" placeholder="video,3d,planning">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Excluded Skills / Keywords</div>
+          <div class="field-hint">Extra comma-separated terms — matching projects are skipped</div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="project_excluded_skills" id="field-project_excluded_skills"
+                 class="s-input" placeholder="data entry, article writing">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Excluded Currencies</div>
+          <div class="field-hint">Symbol or ISO code, comma-separated · empty = accept all</div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="project_excluded_currencies" id="field-project_excluded_currencies"
+                 class="s-input w-48" placeholder="₹, INR">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Existing Bids</div>
+          <div class="field-hint">Skip projects with more bids than this · 0 = no limit</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_max_bid_count" id="field-project_max_bid_count"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Min Opportunity Score</div>
+          <div class="field-hint">Proposals for lower-scoring projects require manual review (0–100)</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_min_score" id="field-project_min_score"
+                 class="s-input w-24" min="0" max="100" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Proposal Max Words</div>
+          <div class="field-hint">Hard limit — proposals aim for 90–150 words</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_proposal_max_words" id="field-project_proposal_max_words"
+                 class="s-input w-24" min="60" max="400" step="10">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Questions</div>
+          <div class="field-hint">Client questions allowed inside a proposal</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_max_questions" id="field-project_max_questions"
+                 class="s-input w-24" min="0" max="3" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Avg-Bid Discount (%)</div>
+          <div class="field-hint">Default pricing: bid this % below the visible average bid</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_bid_discount_pct" id="field-project_bid_discount_pct"
+                 class="s-input w-24" min="0" max="50" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Economic Floors ($)</div>
+          <div class="field-hint">Never bid below these, no matter the competition</div>
+        </div>
+        <div class="field-control">
+          <div class="flex items-center gap-3">
+            <label class="text-xs text-muted">Fixed
+              <input type="number" name="project_min_fixed_budget" id="field-project_min_fixed_budget"
+                     class="s-input w-24 ml-1" min="0" step="1">
+            </label>
+            <label class="text-xs text-muted">Hourly
+              <input type="number" name="project_min_hourly_rate" id="field-project_min_hourly_rate"
+                     class="s-input w-24 ml-1" min="0" step="1">
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Daily Bid Limit</div>
+          <div class="field-hint">Max bids per rolling 24h · 0 = no limit</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_daily_bid_limit" id="field-project_daily_bid_limit"
+                 class="s-input w-24" min="0" step="1">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Interval Between Bids (minutes)</div>
+          <div class="field-hint">
+            Wait this long between two bid submissions (default 5). The browser
+            is released in between, so project fetches can still run. 0 = no pause.
+          </div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_bid_interval_minutes"
+                 id="field-project_bid_interval_minutes"
+                 class="s-input w-24" min="0" max="1440" step="0.5">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Auto-Analyze After Fetch</div>
+          <div class="field-hint">Analyze + draft proposals automatically once a fetch finishes</div>
+        </div>
+        <div class="field-control">
+          <select name="project_auto_analyze" id="field-project_auto_analyze" class="s-input w-40">
+            <option value="true">Enabled</option>
+            <option value="false">Disabled</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Require Manual Approval</div>
+          <div class="field-hint">When enabled (recommended), drafted proposals must be approved
+            on the Projects page before Submit Proposals will send them</div>
+        </div>
+        <div class="field-control">
+          <select name="project_require_approval" id="field-project_require_approval" class="s-input w-40">
+            <option value="true">Required (safe)</option>
+            <option value="false">Auto-approve passing drafts</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Max Proposal Revisions</div>
+          <div class="field-hint">Automatic regenerations when quality review fails (0–5)</div>
+        </div>
+        <div class="field-control">
+          <input type="number" name="project_max_revisions" id="field-project_max_revisions"
+                 class="s-input w-24" min="0" max="5" step="1">
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════════════════════════════════════════
+       SECTION 7 — Freelancer Profile
+       ══════════════════════════════════════════════════════════════════════════ -->
+  <div class="s-card">
+    <div class="s-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary">👤 Freelancer Profile</h2>
+        <p class="text-xs text-muted mt-0.5">
+          Proposals are written from your real Freelancer.com profile, read automatically
+          through your session. They may only claim what it says — nothing is invented.
+        </p>
+      </div>
+      <button type="button" id="profile-refresh-btn" onclick="refreshProfileConnection()"
+              class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-border
+                     text-xs text-muted hover:text-primary hover:border-primary/50
+                     transition-colors flex-shrink-0">
+        <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh
+      </button>
+    </div>
+    <div class="s-card-body">
+
+      <div id="profile-connection" class="pb-4 mb-1 border-b border-border text-sm text-muted">
+        Checking your Freelancer.com profile…
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Professional Title</div>
+          <div class="field-hint">Optional — used alongside your Freelancer.com headline</div>
+        </div>
+        <div class="field-control">
+          <input type="text" name="profile_title" id="field-profile_title"
+                 class="s-input" placeholder="Full-stack web developer">
+        </div>
+      </div>
+
+      <div class="field-row">
+        <div>
+          <div class="field-label">Additional Notes</div>
+          <div class="field-hint">Optional — anything true about you that your Freelancer.com profile doesn't say</div>
+        </div>
+        <div class="field-control">
+          <textarea name="profile_summary" id="field-profile_summary" rows="3"
+                    class="s-input" placeholder="Leave empty if your profile says it all"></textarea>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div><!-- /max-w-3xl -->
+
+<!-- ── Sticky save bar ──────────────────────────────────────────────────────── -->
+<div id="save-bar">
+  <button id="save-btn" class="save-btn" onclick="saveSettings()">
+    <i data-lucide="save" class="w-4 h-4"></i>
+    Save Settings
+  </button>
+  <span id="save-status" class="text-sm text-muted"></span>
+</div>
+
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// Secret field helpers
+// ─────────────────────────────────────────────────────────────────────────────
+// Tracks which secret keys are being edited (user clicked "Change")
+const _editing = new Set();
+// Pending file for cookie upload
+let _cookieFile = null;
+
+function renderSecretField(key, isSet) {
+  const ctrl = document.getElementById(`ctrl-${key}`);
+  if (!ctrl) return;
+
+  if (isSet && !_editing.has(key)) {
+    // Locked: show mask + "Change" button
+    ctrl.innerHTML = `
+      <div class="secret-locked">
+        <span class="secret-mask">••••••••</span>
+        <button type="button" class="change-btn" onclick="unlockSecret('${key}')">
+          Change
+        </button>
+        <span class="text-xs text-success flex items-center gap-1">
+          <i data-lucide="check-circle" class="w-3 h-3"></i> Set
+        </span>
+      </div>`;
+  } else {
+    // Unlocked: password input with show/hide toggle + inline Save / Cancel
+    ctrl.innerHTML = `
+      <div class="pw-wrap">
+        <input type="password" id="field-${key}" name="${key}"
+               class="s-input" placeholder="Enter new value…"
+               autocomplete="new-password"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();saveSingleSetting('${key}')}">
+        <button type="button" class="pw-toggle"
+                onclick="togglePwVisibility('field-${key}', this)"
+                tabindex="-1">
+          <i data-lucide="eye" class="w-4 h-4"></i>
+        </button>
+      </div>
+      <div class="flex items-center gap-2 mt-1">
+        <button type="button" id="save-${key}-btn"
+                class="save-btn-sm"
+                onclick="saveSingleSetting('${key}')">
+          <i data-lucide="save" class="w-3.5 h-3.5"></i>
+          Save
+        </button>
+        ${isSet ? `
+          <button type="button" class="cancel-btn-sm"
+                  onclick="cancelUnlock('${key}')">
+            Cancel
+          </button>` : ''}
+      </div>`;
+  }
+  lucide.createIcons({ nodes: [ctrl] });
+}
+
+// Save a single key — called from the per-field "Save" button next to each
+// API key input. Uses the same /settings/save endpoint as the bulk save,
+// but only sends the one key so plain fields aren't overwritten with whatever
+// is currently in the DOM.
+async function saveSingleSetting(key) {
+  const inp = document.getElementById(`field-${key}`);
+  const val = (inp?.value || '').trim();
+  if (!val) {
+    showToast('Please enter a value first.', 'warning');
+    inp?.focus();
+    return;
+  }
+
+  const btn = document.getElementById(`save-${key}-btn`);
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Saving…';
+    lucide.createIcons({ nodes: [btn] });
+  }
+
+  try {
+    const r = await fetch('/settings/save', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ [key]: val }),
+    });
+    const d = await r.json();
+    if (!d.success) throw new Error(d.message || 'Save failed.');
+
+    showToast(`${key.replace(/_/g, ' ')} saved.`, 'success');
+    _editing.delete(key);
+    renderSecretField(key, true);
+  } catch (err) {
+    showToast(err.message, 'error');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="save" class="w-3.5 h-3.5"></i> Save';
+      lucide.createIcons({ nodes: [btn] });
+    }
+  }
+}
+
+function unlockSecret(key) {
+  _editing.add(key);
+  // isSet doesn't matter once unlocked — we always show input
+  renderSecretField(key, true);
+  document.getElementById(`field-${key}`)?.focus();
+}
+
+function cancelUnlock(key) {
+  _editing.delete(key);
+  renderSecretField(key, true);
+}
+
+function togglePwVisibility(inputId, btn) {
+  const inp = document.getElementById(inputId);
+  if (!inp) return;
+  const isHidden = inp.type === 'password';
+  inp.type = isHidden ? 'text' : 'password';
+  btn.innerHTML = isHidden
+    ? '<i data-lucide="eye-off" class="w-4 h-4"></i>'
+    : '<i data-lucide="eye"     class="w-4 h-4"></i>';
+  lucide.createIcons({ nodes: [btn] });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Collapsible
+// ─────────────────────────────────────────────────────────────────────────────
+function toggleCollapsible(id) {
+  const body    = document.getElementById(id);
+  const chevron = document.getElementById(`${id}-chevron`);
+  const open    = body.classList.toggle('open');
+  if (chevron) chevron.style.transform = open ? 'rotate(180deg)' : '';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cookie upload
+// ─────────────────────────────────────────────────────────────────────────────
+function handleCookieDrop(event) {
+  event.preventDefault();
+  document.getElementById('cookie-drop-zone').classList.remove('dragover');
+  const file = event.dataTransfer?.files?.[0];
+  if (file) setSelectedFile(file);
+}
+
+function handleCookieFile(file) {
+  if (file) setSelectedFile(file);
+}
+
+function setSelectedFile(file) {
+  _cookieFile = file;
+  const zone = document.getElementById('cookie-drop-zone');
+  const input = document.querySelector('#cookie-drop-zone .pointer-events-none');
+  if (input) input.innerHTML = `
+    <i data-lucide="file-json" class="w-8 h-8 text-accent mx-auto"></i>
+    <p class="text-sm font-medium text-primary mt-1">${esc(file.name)}</p>
+    <p class="text-xs text-muted">${(file.size / 1024).toFixed(1)} KB · Click Upload to continue</p>`;
+  lucide.createIcons({ nodes: [zone] });
+  setCookieResult('', '');
+}
+
+async function uploadCookies() {
+  if (!_cookieFile) {
+    setCookieResult('error', 'Please select a JSON file first.');
+    return;
+  }
+
+  const btn = document.getElementById('upload-cookie-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Uploading…';
+  lucide.createIcons({ nodes: [btn] });
+
+  const form = new FormData();
+  form.append('cookie_file', _cookieFile);
+
+  try {
+    const r = await fetch('/settings/cookies', { method: 'POST', body: form });
+    const d = await r.json();
+    if (d.success) {
+      setCookieResult('success', `✅ ${d.message}`);
+      showToast(d.message, 'success');
+      _cookieFile = null;
+      await refreshCookieBanner();
+    } else {
+      setCookieResult('error', `❌ ${d.message}`);
+      showToast(d.message, 'error');
+    }
+  } catch (err) {
+    setCookieResult('error', `❌ Network error: ${err.message}`);
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i data-lucide="upload" class="w-4 h-4"></i> Upload Cookies';
+    lucide.createIcons({ nodes: [btn] });
+  }
+}
+
+async function clearCookies() {
+  if (!confirm('Clear the current Freelancer session? The bot will not be able to log in until you upload new cookies.')) return;
+
+  try {
+    const r = await fetch('/settings/cookies/clear', { method: 'POST' });
+    const d = await r.json();
+    if (d.success) {
+      showToast('Session cleared.', 'success');
+      await refreshCookieBanner();
+    } else {
+      showToast(d.message || 'Failed to clear.', 'error');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+function setCookieResult(type, message) {
+  const el = document.getElementById('cookie-upload-result');
+  if (!message) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  if (type === 'success') {
+    el.className = 'text-sm rounded-lg px-4 py-2.5 border bg-success/8 border-success/25 text-success';
+  } else {
+    el.className = 'text-sm rounded-lg px-4 py-2.5 border bg-danger/8 border-danger/25 text-danger';
+  }
+  el.textContent = message;
+}
+
+async function refreshCookieBanner() {
+  try {
+    const r = await fetch('/api/stats');
+    if (!r.ok) return;
+    const d = await r.json();
+    applyLocalCookieBanner(d.cookie_status);
+  } catch {}
+}
+
+function applyLocalCookieBanner(status) {
+  const banner = document.getElementById('cookie-banner-local');
+  const text   = document.getElementById('cookie-banner-text');
+  const clearBtn = document.getElementById('clear-cookie-btn');
+
+  const cfgs = {
+    active:   { cls:'active',  icon:'check-circle',   msg:'Session Active — cookies loaded and valid' },
+    uploaded: { cls:'active',  icon:'check-circle',   msg:'Cookies uploaded — session will be verified on next run' },
+    expired:  { cls:'expired', icon:'alert-triangle',  msg:'Session Expired — upload fresh cookies' },
+    none:     { cls:'none',    icon:'x-circle',        msg:'No session — upload cookies to start' },
+  };
+  const cfg = cfgs[status] || cfgs.none;
+
+  banner.className = `cookie-banner ${cfg.cls}`;
+  banner.innerHTML = `
+    <i data-lucide="${cfg.icon}" class="w-4 h-4 flex-shrink-0"></i>
+    <span id="cookie-banner-text">${cfg.msg}</span>`;
+  lucide.createIcons({ nodes: [banner] });
+
+  // Show/hide Clear button
+  if (status === 'active' || status === 'uploaded') {
+    clearBtn.classList.remove('hidden');
+  } else {
+    clearBtn.classList.add('hidden');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Load settings from API and populate form
+// ─────────────────────────────────────────────────────────────────────────────
+const SECRET_KEYS = [];   // AI provider keys live on /ai-agents
+
+// Plain (non-secret) fields mapped to their input element names
+const PLAIN_FIELDS = [
+  'target_url', 'pages_to_scrape', 'server_host',
+  'max_submissions_per_session', 'submission_interval_minutes',
+  'submission_ai_declaration',
+  'project_bid_interval_minutes',
+  'min_prize_filter', 'max_entries_filter', 'max_contest_age_hours',
+  'designs_per_contest',
+  'prompt_enhancer_enabled', 'design_critic_enabled', 'critic_regen_threshold',
+  // Projects / Proposals workflow
+  'project_search_url', 'project_pages_to_fetch', 'project_detail_batch_cap',
+  'project_max_age_hours',
+  'project_min_budget', 'project_languages', 'project_excluded_skills',
+  'project_accepted_domains', 'project_excluded_domains',
+  'project_excluded_currencies',
+  'project_max_bid_count', 'project_min_score', 'project_proposal_max_words',
+  'project_max_questions', 'project_bid_discount_pct',
+  'project_min_fixed_budget', 'project_min_hourly_rate',
+  'project_daily_bid_limit', 'project_auto_analyze',
+  'project_require_approval', 'project_max_revisions',
+  // Freelancer profile
+  'profile_title', 'profile_summary',
+];
+
+function onAutoSubmitToggle() {
+  const el      = document.getElementById('field-auto_submit_enabled');
+  const label   = document.getElementById('autoSubmitLabel');
+  const warning = document.getElementById('autoSubmitWarning');
+  if (!el || !label || !warning) return;
+  if (el.checked) {
+    label.textContent  = 'Enabled';
+    label.style.color  = '#22c55e';
+    warning.classList.add('hidden');
+  } else {
+    label.textContent  = 'Disabled';
+    label.style.color  = '#f59e0b';
+    warning.classList.remove('hidden');
+  }
+}
+
+function onDesignsCountInput() {
+  const input   = document.getElementById('field-designs_per_contest');
+  const credits = document.getElementById('creditsPerContest');
+  const count   = document.getElementById('variationsCount');
+  if (!input || !credits || !count) return;
+  let n = parseInt(input.value, 10);
+  if (!Number.isFinite(n) || n < 1) n = 1;
+  if (n > 5) n = 5;
+  credits.textContent = (n * 10).toString();
+  count.textContent   = n.toString();
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/settings');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+
+    // Populate plain fields
+    PLAIN_FIELDS.forEach(key => {
+      const el = document.getElementById(`field-${key}`);
+      if (el && data[key]) el.value = data[key].value || '';
+    });
+
+    // Auto-submit toggle is a checkbox — reflect the stored boolean string.
+    const autoSubmitEl = document.getElementById('field-auto_submit_enabled');
+    if (autoSubmitEl) {
+      autoSubmitEl.checked = (data['auto_submit_enabled']?.value ?? 'true') === 'true';
+      onAutoSubmitToggle();
+    }
+    // Update the credit-cost hint to match the loaded variation count.
+    onDesignsCountInput();
+
+    // Render secret fields
+    SECRET_KEYS.forEach(key => {
+      const isSet = data[key]?.is_set || false;
+      renderSecretField(key, isSet);
+    });
+
+    // Cookie banner
+    const cookieStatus = data['cookie_status']?.value || 'none';
+    applyLocalCookieBanner(cookieStatus);
+
+  } catch (err) {
+    showToast(`Failed to load settings: ${err.message}`, 'error');
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Save settings
+// ─────────────────────────────────────────────────────────────────────────────
+async function saveSettings() {
+  const btn    = document.getElementById('save-btn');
+  const status = document.getElementById('save-status');
+
+  btn.disabled = true;
+  btn.innerHTML = '<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i> Saving…';
+  lucide.createIcons({ nodes: [btn] });
+  status.textContent = '';
+
+  const payload = {};
+
+  // Plain fields
+  PLAIN_FIELDS.forEach(key => {
+    const el = document.getElementById(`field-${key}`);
+    if (el) payload[key] = el.value;
+  });
+
+  // Auto-submit toggle — always send a canonical boolean string so the
+  // server can store it without needing checkbox-style form parsing.
+  const autoSubmitEl = document.getElementById('field-auto_submit_enabled');
+  if (autoSubmitEl) {
+    payload['auto_submit_enabled'] = autoSubmitEl.checked ? 'true' : 'false';
+  }
+
+  // Secret fields — only include if user actively edited them
+  SECRET_KEYS.forEach(key => {
+    if (!_editing.has(key)) return;
+    const el = document.getElementById(`field-${key}`);
+    const val = el?.value?.trim() || '';
+    if (val) payload[key] = val;
+  });
+
+  try {
+    const r = await fetch('/settings/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json();
+
+    if (d.success) {
+      showToast(d.message || 'Settings saved.', 'success');
+      status.textContent = '✓ Saved';
+      status.className   = 'text-sm text-success';
+
+      // Re-lock secret fields that were edited
+      SECRET_KEYS.forEach(key => {
+        if (_editing.has(key) && (payload[key] || '').trim()) {
+          _editing.delete(key);
+          renderSecretField(key, true);
+        }
+      });
+
+      // Fade status after 3 s
+      setTimeout(() => { status.textContent = ''; }, 3000);
+    } else {
+      throw new Error(d.message || 'Unknown error');
+    }
+  } catch (err) {
+    showToast(err.message, 'error');
+    status.textContent = '✗ Save failed';
+    status.className   = 'text-sm text-danger';
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i data-lucide="save" class="w-4 h-4"></i> Save Settings';
+    lucide.createIcons({ nodes: [btn] });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Freelancer.com profile connection
+// ─────────────────────────────────────────────────────────────────────────────
+function renderProfileConnection(p) {
+  const box = document.getElementById('profile-connection');
+  const synced = p.synced_at ? new Date(p.synced_at).toLocaleString() : null;
+  const warning = p.error ? `
+    <div class="mt-3 px-3 py-2 rounded-lg text-xs bg-warning/10 border border-warning/25 text-warning">
+      Couldn't read the profile just now: ${esc(p.error)}
+      ${p.connected ? `<span class="block mt-0.5">Proposals keep using the copy saved ${esc(synced || '')}.</span>` : ''}
+    </div>` : '';
+
+  if (!p.connected) {
+    box.innerHTML = `
+      <p class="text-primary font-medium">Not connected yet</p>
+      <p class="text-xs text-muted mt-1">Upload your Freelancer cookies above, then press Refresh.
+        Until the profile can be read, proposals describe only the project and make no claims about you.</p>
+      ${warning}`;
+    return;
+  }
+
+  const s = p.stats || {};
+  const record = [
+    s.reviews ? `${s.rating} ★ from ${s.reviews} reviews` : null,
+    s.completed_jobs ? `${s.completed_jobs} completed jobs` : null,
+    s.on_time_pct != null ? `${s.on_time_pct}% on time` : null,
+    s.on_budget_pct != null ? `${s.on_budget_pct}% on budget` : null,
+  ].filter(Boolean).join(' · ');
+  const skills = (p.skills || []).map(n =>
+    `<span class="px-2 py-0.5 rounded-full text-[11px] bg-bg border border-border text-primary">${esc(n)}</span>`).join(' ');
+  const counts = [
+    `${p.portfolio_count} portfolio item${p.portfolio_count === 1 ? '' : 's'}`,
+    `${p.review_count} client review${p.review_count === 1 ? '' : 's'}`,
+    `${(p.experience || []).length} experience entr${(p.experience || []).length === 1 ? 'y' : 'ies'}`,
+    `${p.certification_count} certification${p.certification_count === 1 ? '' : 's'}`,
+  ].join(' · ');
+
+  box.innerHTML = `
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="w-2 h-2 rounded-full bg-success flex-shrink-0"></span>
+      <a href="${esc(p.url)}" target="_blank" rel="noopener" class="text-primary font-medium hover:text-accent">
+        ${esc(p.name || p.username)} <span class="text-muted font-normal">@${esc(p.username)}</span></a>
+      ${synced ? `<span class="text-[11px] text-muted ml-auto">Synced ${esc(synced)}</span>` : ''}
+    </div>
+    ${p.tagline ? `<p class="text-xs text-primary mt-1.5">${esc(p.tagline)}</p>` : ''}
+    ${record ? `<p class="text-xs text-muted mt-1">${esc(record)}</p>` : ''}
+    <p class="text-xs text-muted mt-1">${esc(counts)}</p>
+    ${skills ? `<div class="flex flex-wrap gap-1 mt-2.5">${skills}</div>` : ''}
+    ${warning}`;
+}
+
+async function loadProfileConnection() {
+  try {
+    const r = await fetch('/settings/profile');
+    if (r.ok) renderProfileConnection(await r.json());
+  } catch (err) { /* the card keeps its last state */ }
+}
+
+async function refreshProfileConnection() {
+  const btn = document.getElementById('profile-refresh-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> Reading…';
+  lucide.createIcons({ nodes: [btn] });
+  try {
+    const r = await fetch('/settings/profile/refresh', { method: 'POST' });
+    const p = await r.json();
+    if (!r.ok) throw new Error(p.error || r.statusText);
+    renderProfileConnection(p);
+    showToast(p.error ? 'Profile could not be read — see the note in the card.' : 'Profile refreshed.',
+              p.error ? 'warning' : 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i> Refresh';
+    lucide.createIcons({ nodes: [btn] });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helper
+// ─────────────────────────────────────────────────────────────────────────────
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+lucide.createIcons();
+loadSettings();
+loadProfileConnection();
+</script>
+{% endblock %}

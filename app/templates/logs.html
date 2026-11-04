@@ -1,0 +1,762 @@
+{% extends "base.html" %}
+{% block title %}Logs — ContestBot{% endblock %}
+{% block page_title %}Live Operations{% endblock %}
+
+{% block head %}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<style>
+  /* ── Shell: fills the area below the topbar; children stack, viewport grows ── */
+  #log-shell {
+    display: flex;
+    flex-direction: column;
+    height: calc(100vh - 56px - 3rem);   /* viewport - topbar - main p-6 padding */
+    min-height: 360px;
+  }
+
+  /* ── Operations bar (pipeline + connection + live counters) ────────────────── */
+  #ops-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: .75rem;
+    padding: .6rem .875rem;
+    background: linear-gradient(180deg, #141627, #12141f);
+    border: 1px solid #1e2030;
+    border-bottom: none;
+    border-radius: 10px 10px 0 0;
+    flex-shrink: 0;
+  }
+  .ops-label {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .625rem;
+    letter-spacing: .12em;
+    color: #475569;
+    text-transform: uppercase;
+    flex-shrink: 0;
+  }
+
+  /* Pipeline stage chips */
+  #pipeline { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; }
+  .stage-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .25rem .6rem;
+    border-radius: 7px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .6875rem;
+    font-weight: 500;
+    color: #64748b;
+    background: #0d0f18;
+    border: 1px solid #1e2030;
+    transition: all .15s;
+    user-select: none;
+  }
+  .stage-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #334155; flex-shrink: 0;
+    transition: background .15s;
+  }
+  .stage-chip.running {
+    color: #e2e8f0;
+    border-color: rgba(34,197,94,.45);
+    background: rgba(34,197,94,.08);
+  }
+  .stage-chip.running .stage-dot { background: #22c55e; animation: pulse-dot 1.3s ease-in-out infinite; }
+  @keyframes pulse-dot { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:.55;transform:scale(1.4);} }
+
+  /* Live counter pills */
+  .stat-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .2rem .55rem;
+    border-radius: 9999px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .6875rem;
+    font-weight: 600;
+    border: 1px solid #1e2030;
+    background: #0d0f18;
+    flex-shrink: 0;
+  }
+  .stat-pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .stat-pill .lbl { color:#475569; font-weight:500; font-size:.625rem; letter-spacing:.04em; }
+  .stat-error   .dot{background:#ef4444;} .stat-error   .num{color:#ef4444;}
+  .stat-warning .dot{background:#f59e0b;} .stat-warning .num{color:#f59e0b;}
+  .stat-success .dot{background:#22c55e;} .stat-success .num{color:#22c55e;}
+  .stat-info    .dot{background:#94a3b8;} .stat-info    .num{color:#94a3b8;}
+
+  #rate-pill .num { color:#4f6ef7; }
+
+  /* Connection pill */
+  .conn-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: .4rem;
+    padding: .25rem .65rem;
+    border-radius: 9999px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .625rem;
+    font-weight: 600;
+    letter-spacing: .1em;
+    border: 1px solid;
+    flex-shrink: 0;
+  }
+  .conn-dot { width: 7px; height: 7px; border-radius: 50%; }
+  .conn-live   { color:#22c55e; border-color:rgba(34,197,94,.4);  background:rgba(34,197,94,.08); }
+  .conn-live   .conn-dot { background:#22c55e; animation: pulse-dot 1.3s ease-in-out infinite; }
+  .conn-off    { color:#ef4444; border-color:rgba(239,68,68,.4);  background:rgba(239,68,68,.08); }
+  .conn-off    .conn-dot { background:#ef4444; }
+  .conn-paused { color:#f59e0b; border-color:rgba(245,158,11,.4); background:rgba(245,158,11,.08); }
+  .conn-paused .conn-dot { background:#f59e0b; }
+
+  /* ── Controls bar (filters + search + actions) ─────────────────────────────── */
+  #log-controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem;
+    padding: .55rem .875rem;
+    background: #12141f;
+    border-left: 1px solid #1e2030;
+    border-right: 1px solid #1e2030;
+    border-top: 1px solid #1e2030;
+    flex-shrink: 0;
+  }
+
+  .filter-pill {
+    padding: .22rem .6rem;
+    border-radius: 9999px;
+    font-size: .6875rem;
+    font-weight: 500;
+    border: 1px solid #1e2030;
+    color: #64748b;
+    cursor: pointer;
+    transition: background .12s, color .12s, border-color .12s;
+    font-family: 'JetBrains Mono', monospace;
+    letter-spacing: .02em;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .filter-pill:hover:not(.active) { color: #e2e8f0; border-color: rgba(100,116,139,.5); }
+  .filter-pill.active.pill-all     { background: rgba(100,116,139,.2); color:#e2e8f0; border-color:rgba(100,116,139,.5); }
+  .filter-pill.active.pill-INFO    { background: rgba(148,163,184,.15); color:#94a3b8; border-color:rgba(148,163,184,.4); }
+  .filter-pill.active.pill-SUCCESS { background: rgba(34,197,94,.15);   color:#22c55e; border-color:rgba(34,197,94,.4); }
+  .filter-pill.active.pill-WARNING { background: rgba(245,158,11,.15);  color:#f59e0b; border-color:rgba(245,158,11,.4); }
+  .filter-pill.active.pill-ERROR   { background: rgba(239,68,68,.15);   color:#ef4444; border-color:rgba(239,68,68,.4); }
+  .filter-pill.active.pill-module  { background: rgba(79,110,247,.15);  color:#4f6ef7; border-color:rgba(79,110,247,.4); }
+
+  .pill-divider { width: 1px; height: 1.25rem; background: #1e2030; flex-shrink: 0; }
+
+  /* Search box */
+  #log-search-wrap {
+    position: relative;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  #log-search-wrap i { position:absolute; left:.5rem; color:#475569; pointer-events:none; }
+  #log-search {
+    background: #0a0c14 !important;
+    border: 1px solid #1e2030;
+    border-radius: 7px;
+    padding: .25rem .55rem .25rem 1.75rem;
+    font-size: .6875rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: #e2e8f0;
+    width: 12rem;
+    transition: border-color .12s, box-shadow .12s, width .15s;
+  }
+  #log-search:focus { border-color:#4f6ef7; outline:none; box-shadow:0 0 0 2px rgba(79,110,247,.2); width:15rem; }
+
+  /* Action buttons */
+  .ctrl-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .25rem .65rem;
+    border-radius: 7px;
+    font-size: .6875rem;
+    font-weight: 500;
+    border: 1px solid #1e2030;
+    color: #94a3b8;
+    background: transparent;
+    cursor: pointer;
+    transition: all .12s;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .ctrl-btn:hover { color:#e2e8f0; border-color:rgba(100,116,139,.45); }
+  .ctrl-btn i { width:11px; height:11px; }
+  .ctrl-btn.danger { color:#ef4444; background:rgba(239,68,68,.06); border-color:rgba(239,68,68,.22); }
+  .ctrl-btn.danger:hover { background:rgba(239,68,68,.16); border-color:rgba(239,68,68,.5); }
+  .ctrl-btn.toggle-on  { color:#22c55e; background:rgba(34,197,94,.1);  border-color:rgba(34,197,94,.3); }
+  .ctrl-btn.toggle-off { color:#64748b; }
+  .ctrl-btn.toggle-off:hover { color:#e2e8f0; border-color:rgba(100,116,139,.4); }
+  .ctrl-btn.warn-on { color:#f59e0b; background:rgba(245,158,11,.1); border-color:rgba(245,158,11,.35); }
+
+  /* Active contest filter chip */
+  #contest-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    padding: .22rem .55rem;
+    border-radius: 9999px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .6875rem;
+    color: #4f6ef7;
+    background: rgba(79,110,247,.12);
+    border: 1px solid rgba(79,110,247,.4);
+  }
+  #contest-filter-chip button { color:#4f6ef7; opacity:.7; line-height:1; }
+  #contest-filter-chip button:hover { opacity:1; }
+
+  /* ── Terminal viewport ─────────────────────────────────────────────────────── */
+  #log-viewport {
+    flex: 1;
+    overflow-y: auto;
+    background: #07080d;
+    border: 1px solid #1e2030;
+    border-radius: 0 0 10px 10px;
+    padding: .6rem .25rem .6rem 0;
+    display: flex;
+    flex-direction: column-reverse;   /* scrollTop 0 = visual bottom (newest) */
+    scrollbar-width: thin;
+    scrollbar-color: #1e2030 transparent;
+  }
+  #log-viewport::-webkit-scrollbar       { width: 6px; }
+  #log-viewport::-webkit-scrollbar-track { background: transparent; }
+  #log-viewport::-webkit-scrollbar-thumb { background: #1e2030; border-radius: 99px; }
+
+  #log-list { display: flex; flex-direction: column; min-height: 0; }
+
+  /* ── Log line ──────────────────────────────────────────────────────────────── */
+  .log-line {
+    display: flex;
+    align-items: baseline;
+    gap: .55rem;
+    padding: .16rem .9rem .16rem .75rem;
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    font-size: .75rem;
+    line-height: 1.6;
+    border-left: 2px solid transparent;
+    animation: fade-in .12s ease;
+  }
+  .log-line:hover { background: rgba(255,255,255,.025); }
+  .log-line.is-hidden { display: none; }
+  .log-line.lvl-SUCCESS { border-left-color: rgba(34,197,94,.55); }
+  .log-line.lvl-WARNING { border-left-color: rgba(245,158,11,.55); }
+  .log-line.lvl-ERROR   { border-left-color: rgba(239,68,68,.7); background: rgba(239,68,68,.04); }
+
+  @keyframes fade-in { from{opacity:0;transform:translateY(-2px);} to{opacity:1;transform:translateY(0);} }
+
+  .log-ts { color:#334155; flex-shrink:0; font-size:.6875rem; letter-spacing:.02em; user-select:none; }
+
+  .log-badge {
+    flex-shrink:0; display:inline-block; width:3.9rem; text-align:center;
+    padding:0 .35rem; border-radius:3px;
+    font-size:.5625rem; font-weight:600; letter-spacing:.06em;
+    text-transform:uppercase; line-height:1.65;
+  }
+  .badge-INFO    { background: rgba(148,163,184,.15); color:#94a3b8; }
+  .badge-SUCCESS { background: rgba(34,197,94,.18);   color:#22c55e; }
+  .badge-WARNING { background: rgba(245,158,11,.18);  color:#f59e0b; }
+  .badge-ERROR   { background: rgba(239,68,68,.22);   color:#ef4444; }
+
+  .log-module {
+    flex-shrink:0; display:inline-flex; align-items:center; gap:.35rem;
+    color:#64748b; font-size:.6875rem; min-width:6.5rem; letter-spacing:.02em;
+  }
+  .mod-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+
+  .ctst-badge {
+    flex-shrink:0; cursor:pointer;
+    color:#4f6ef7; background:rgba(79,110,247,.1);
+    border:1px solid rgba(79,110,247,.25);
+    border-radius:4px; padding:0 .3rem;
+    font-size:.625rem;
+  }
+  .ctst-badge:hover { background:rgba(79,110,247,.22); }
+
+  .log-msg { flex:1; word-break:break-word; white-space:pre-wrap; }
+  .msg-INFO{color:#cbd5e1;} .msg-SUCCESS{color:#86efac;} .msg-WARNING{color:#fcd34d;} .msg-ERROR{color:#fca5a5;}
+  mark.hl { background:#4f6ef7; color:#fff; border-radius:2px; padding:0 1px; }
+
+  /* Empty state */
+  #log-empty {
+    flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center;
+    gap:.75rem; color:#334155;
+    font-family:'JetBrains Mono', monospace; font-size:.75rem; user-select:none;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div id="log-shell">
+
+  <!-- ── Operations bar ─────────────────────────────────────────────────────── -->
+  <div id="ops-bar">
+    <span class="ops-label">Pipeline</span>
+    <div id="pipeline">
+      <div class="stage-chip" id="stage-fetch"><span class="stage-dot"></span>Fetch</div>
+      <div class="stage-chip" id="stage-analyze"><span class="stage-dot"></span>Analyze</div>
+      <div class="stage-chip" id="stage-generate"><span class="stage-dot"></span>Generate</div>
+      <div class="stage-chip" id="stage-submit"><span class="stage-dot"></span>Submit</div>
+    </div>
+
+    <div class="flex-1 min-w-0"></div>
+
+    <!-- Live counters -->
+    <span class="stat-pill stat-error"   title="Errors">  <span class="dot"></span><span class="num" id="stat-error">0</span></span>
+    <span class="stat-pill stat-warning" title="Warnings"><span class="dot"></span><span class="num" id="stat-warning">0</span></span>
+    <span class="stat-pill stat-success" title="Success"> <span class="dot"></span><span class="num" id="stat-success">0</span></span>
+    <span class="stat-pill stat-info"    title="Info">    <span class="dot"></span><span class="num" id="stat-info">0</span></span>
+    <span class="stat-pill" id="rate-pill" title="Log rate (last 60s)"><span class="num" id="stat-rate">0</span><span class="lbl">/min</span></span>
+
+    <div class="pill-divider"></div>
+
+    <!-- Connection / feed state -->
+    <div class="conn-pill conn-off" id="conn-pill"><span class="conn-dot"></span><span id="conn-text">OFFLINE</span></div>
+  </div>
+
+  <!-- ── Controls bar ───────────────────────────────────────────────────────── -->
+  <div id="log-controls">
+    <span class="ops-label pr-0.5">Level</span>
+    <button class="filter-pill pill-all active" data-group="level" data-value="all"     onclick="setFilter('level','all',this)">ALL</button>
+    <button class="filter-pill pill-INFO"       data-group="level" data-value="INFO"    onclick="setFilter('level','INFO',this)">INFO</button>
+    <button class="filter-pill pill-SUCCESS"    data-group="level" data-value="SUCCESS" onclick="setFilter('level','SUCCESS',this)">SUCCESS</button>
+    <button class="filter-pill pill-WARNING"    data-group="level" data-value="WARNING" onclick="setFilter('level','WARNING',this)">WARNING</button>
+    <button class="filter-pill pill-ERROR"      data-group="level" data-value="ERROR"   onclick="setFilter('level','ERROR',this)">ERROR</button>
+
+    <div class="pill-divider"></div>
+
+    <span class="ops-label">Module</span>
+    <button class="filter-pill pill-all active" data-group="module" data-value="all" onclick="setFilter('module','all',this)">ALL</button>
+    {% for mod in ['scraper','analyzer','generator','critic','submitter','projects','auth','system'] %}
+    <button class="filter-pill pill-module" data-group="module" data-value="{{ mod }}" onclick="setFilter('module','{{ mod }}',this)">{{ mod }}</button>
+    {% endfor %}
+
+    <span id="contest-filter-chip" class="hidden"></span>
+
+    <div class="flex-1 min-w-0"></div>
+
+    <!-- Search -->
+    <div id="log-search-wrap">
+      <i data-lucide="search" style="width:11px;height:11px;"></i>
+      <input id="log-search" type="text" placeholder="Search…  ( / )" autocomplete="off"
+             oninput="onSearch(this.value)">
+    </div>
+
+    <button id="pause-btn" class="ctrl-btn toggle-on" onclick="togglePause()">
+      <i data-lucide="pause"></i><span id="pause-label">Live</span>
+    </button>
+    <button id="autoscroll-btn" class="ctrl-btn toggle-on" onclick="toggleAutoScroll()">
+      <i data-lucide="arrow-down-to-line"></i>Auto-scroll
+    </button>
+    <button class="ctrl-btn" onclick="exportLogs()"><i data-lucide="download"></i>Export</button>
+    <button class="ctrl-btn" onclick="clearDisplay()"><i data-lucide="eraser"></i>Clear</button>
+    <button class="ctrl-btn danger" onclick="wipeLogs()"><i data-lucide="trash-2"></i>Wipe</button>
+
+    <span id="log-count" class="ops-label whitespace-nowrap pl-1">Loading…</span>
+  </div>
+
+  <!-- ── Terminal viewport ──────────────────────────────────────────────────── -->
+  <div id="log-viewport">
+    <div id="log-list">
+      <div id="log-empty">
+        <i data-lucide="terminal" style="width:32px;height:32px;color:#1e2030;"></i>
+        <span>Waiting for logs…</span>
+      </div>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+
+{% block scripts %}
+<script>
+// ─────────────────────────────────────────────────────────────────────────────
+// State
+// ─────────────────────────────────────────────────────────────────────────────
+const MAX_DOM_LINES = 800;
+const RATE_WINDOW_MS = 60000;
+
+const MODULE_COLORS = {
+  scraper:'#38bdf8', analyzer:'#a78bfa', generator:'#f472b6',
+  critic:'#fbbf24', submitter:'#34d399', auth:'#60a5fa', system:'#94a3b8',
+};
+
+let _filter      = { level:'all', module:'all', contest:null };
+let _search      = '';
+let _autoScroll  = true;
+let _paused      = false;
+let _connected   = false;
+let _buffer      = [];      // live entries held while paused
+let _rateTimes   = [];      // receive timestamps within RATE_WINDOW_MS
+let _searchTimer = null;
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Filters (level / module reload from the API; search & contest layered on top)
+// ─────────────────────────────────────────────────────────────────────────────
+function setFilter(group, value, btn) {
+  _filter[group] = value;
+  document.querySelectorAll(`.filter-pill[data-group="${group}"]`).forEach(p => {
+    const isActive = p.dataset.value === value;
+    if (isActive) {
+      if (value === 'all')        p.className = 'filter-pill pill-all active';
+      else if (group === 'level') p.className = `filter-pill pill-${value} active`;
+      else                        p.className = 'filter-pill pill-module active';
+    } else {
+      if (p.dataset.value === 'all') p.className = 'filter-pill pill-all';
+      else if (group === 'level')    p.className = `filter-pill pill-${p.dataset.value}`;
+      else                           p.className = 'filter-pill pill-module';
+    }
+  });
+  reloadLogs();
+}
+
+function setContestFilter(id) {
+  _filter.contest = id;
+  renderContestChip();
+  reloadLogs();
+}
+function clearContestFilter() {
+  _filter.contest = null;
+  renderContestChip();
+  reloadLogs();
+}
+function renderContestChip() {
+  const chip = document.getElementById('contest-filter-chip');
+  if (_filter.contest == null) { chip.classList.add('hidden'); return; }
+  chip.classList.remove('hidden');
+  chip.innerHTML = `<i data-lucide="filter" style="width:10px;height:10px;"></i>contest #${esc(_filter.contest)}
+    <button onclick="clearContestFilter()"><i data-lucide="x" style="width:11px;height:11px;"></i></button>`;
+  lucide.createIcons({ nodes: [chip] });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Load historic logs from the API
+// ─────────────────────────────────────────────────────────────────────────────
+async function reloadLogs() {
+  clearDisplayDOM();
+
+  const params = new URLSearchParams({ limit: 400 });
+  if (_filter.level   !== 'all')  params.set('level',  _filter.level);
+  if (_filter.module  !== 'all')  params.set('module', _filter.module);
+  if (_filter.contest != null)    params.set('contest_id', _filter.contest);
+
+  try {
+    const r = await fetch(`/api/logs?${params}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const entries = await r.json();                 // newest-first from API
+    [...entries].reverse().forEach(e => appendLine(e, false));
+    if (_autoScroll) scrollToBottom(false);
+  } catch (err) {
+    appendMetaLine(`⚠ Failed to load logs: ${err.message}`);
+  }
+  refreshMeta();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Append a single log line
+// ─────────────────────────────────────────────────────────────────────────────
+function appendLine(entry, live = true) {
+  // While paused, hold live entries in a buffer instead of rendering them.
+  if (live && _paused) {
+    _buffer.push(entry);
+    updatePauseLabel();
+    return;
+  }
+  if (live) {
+    _rateTimes.push(Date.now());
+  }
+
+  const list  = document.getElementById('log-list');
+  const empty = document.getElementById('log-empty');
+  if (empty) empty.remove();
+
+  const ts  = fmtTs(entry.created_at);
+  const lvl = (entry.level  || 'INFO').toUpperCase();
+  const mod = (entry.module || 'system').toLowerCase();
+  const msg = entry.message || '';
+  const color = MODULE_COLORS[mod] || '#94a3b8';
+
+  const line = document.createElement('div');
+  line.className = `log-line lvl-${lvl}`;
+  line.dataset.level  = lvl;
+  line.dataset.module = mod;
+  line.dataset.ts     = ts;
+  line.dataset.msg    = msg;
+
+  const ctst = entry.contest_id
+    ? `<span class="ctst-badge" title="Filter by this contest"
+             onclick="setContestFilter(${entry.contest_id})">#${entry.contest_id}</span>`
+    : '';
+
+  line.innerHTML = `
+    <span class="log-ts" title="${esc(entry.created_at || '')}">${esc(ts)}</span>
+    <span class="log-badge badge-${lvl}">${lvl}</span>
+    <span class="log-module"><span class="mod-dot" style="background:${color}"></span>${esc(mod)}</span>
+    ${ctst}
+    <span class="log-msg msg-${lvl}">${highlight(msg, _search)}</span>`;
+
+  // Honour the active text search immediately.
+  if (_search && !msg.toLowerCase().includes(_search)) line.classList.add('is-hidden');
+
+  list.appendChild(line);
+  trimOldest();
+
+  if (live) {
+    if (_autoScroll) scrollToBottom(true);
+    refreshMeta();
+  }
+}
+
+function appendMetaLine(text) {
+  const list  = document.getElementById('log-list');
+  const empty = document.getElementById('log-empty');
+  if (empty) empty.remove();
+  const meta = document.createElement('div');
+  meta.className = 'log-line';
+  meta.style.color = '#ef4444';
+  meta.style.fontFamily = "'JetBrains Mono', monospace";
+  meta.style.fontSize = '.6875rem';
+  meta.textContent = text;
+  list.appendChild(meta);
+}
+
+function trimOldest() {
+  const list  = document.getElementById('log-list');
+  const lines = list.querySelectorAll('.log-line');
+  for (let i = 0; i < lines.length - MAX_DOM_LINES; i++) list.removeChild(lines[i]);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Search (client-side overlay on the loaded lines)
+// ─────────────────────────────────────────────────────────────────────────────
+function onSearch(value) {
+  if (_searchTimer) clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(() => {
+    _search = (value || '').trim().toLowerCase();
+    document.querySelectorAll('#log-list .log-line').forEach(line => {
+      const msg = line.dataset.msg;
+      if (msg == null) return;
+      const match = !_search || msg.toLowerCase().includes(_search);
+      line.classList.toggle('is-hidden', !match);
+      const span = line.querySelector('.log-msg');
+      if (span) span.innerHTML = highlight(msg, _search);
+    });
+    refreshMeta();
+  }, 180);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Clear / wipe / export
+// ─────────────────────────────────────────────────────────────────────────────
+function clearDisplayDOM() {
+  const list = document.getElementById('log-list');
+  list.innerHTML = `
+    <div id="log-empty">
+      <i data-lucide="terminal" style="width:32px;height:32px;color:#1e2030;"></i>
+      <span>Waiting for logs…</span>
+    </div>`;
+  lucide.createIcons({ nodes: [list] });
+}
+function clearDisplay() { clearDisplayDOM(); _buffer = []; _rateTimes = []; updatePauseLabel(); refreshMeta(); }
+
+async function wipeLogs() {
+  const ok = await showConfirmModal(
+    'Clear all logs?',
+    'This hides every current log entry for this workspace from the console. New logs will still appear. This cannot be undone.',
+    'Clear logs');
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/logs', { method: 'DELETE' });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    clearDisplay();
+    reloadLogs();
+    showToast('Logs cleared', 'success');
+  } catch (e) {
+    showToast(`Failed to clear logs: ${e.message}`, 'error');
+  }
+}
+
+function exportLogs() {
+  const lines = [...document.querySelectorAll('#log-list .log-line:not(.is-hidden)')]
+    .filter(l => l.dataset.msg != null)
+    .map(l => `[${l.dataset.ts}] ${(l.dataset.level || '').padEnd(7)} [${l.dataset.module}] ${l.dataset.msg}`);
+  if (!lines.length) { showToast('Nothing to export', 'warning'); return; }
+  const blob = new Blob([lines.join('\n') + '\n'], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `contestbot-logs-${new Date().toISOString().slice(0,19).replace(/[:T]/g,'-')}.log`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(a.href);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pause / auto-scroll
+// ─────────────────────────────────────────────────────────────────────────────
+function togglePause() {
+  _paused = !_paused;
+  if (!_paused) {                       // resuming → flush buffered entries
+    const pending = _buffer; _buffer = [];
+    pending.forEach(e => appendLine(e, true));
+    if (_autoScroll) scrollToBottom(true);
+  }
+  renderPauseBtn();        // state changed → swap icon + class
+  updateConnPill();
+}
+// Full render — swaps the icon glyph + colour class (rebuilds the Lucide SVG).
+function renderPauseBtn() {
+  const btn = document.getElementById('pause-btn');
+  btn.className = _paused ? 'ctrl-btn warn-on' : 'ctrl-btn toggle-on';
+  btn.innerHTML = `<i data-lucide="${_paused ? 'play' : 'pause'}"></i>` +
+                  `<span id="pause-label"></span>`;
+  lucide.createIcons({ nodes: [btn] });
+  updatePauseLabel();
+}
+// Lightweight — only the buffered-count text (called per buffered line; no SVG rebuild).
+function updatePauseLabel() {
+  const lbl = document.getElementById('pause-label');
+  if (!lbl) return;
+  lbl.textContent = _paused ? (_buffer.length ? `Resume (${_buffer.length})` : 'Resume') : 'Live';
+}
+
+function toggleAutoScroll() {
+  _autoScroll = !_autoScroll;
+  const btn = document.getElementById('autoscroll-btn');
+  btn.className = _autoScroll ? 'ctrl-btn toggle-on' : 'ctrl-btn toggle-off';
+  btn.innerHTML = `<i data-lucide="arrow-down-to-line"></i>Auto-scroll${_autoScroll ? '' : ' off'}`;
+  lucide.createIcons({ nodes: [btn] });
+  if (_autoScroll) scrollToBottom(false);
+}
+function scrollToBottom(smooth = true) {
+  const vp = document.getElementById('log-viewport');   // column-reverse → top 0 = bottom
+  vp.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'instant' });
+}
+document.getElementById('log-viewport').addEventListener('scroll', function () {
+  if (this.scrollTop > 40 && _autoScroll) {             // user scrolled up → stop following
+    _autoScroll = false;
+    const btn = document.getElementById('autoscroll-btn');
+    btn.className = 'ctrl-btn toggle-off';
+    btn.innerHTML = `<i data-lucide="arrow-down-to-line"></i>Auto-scroll off`;
+    lucide.createIcons({ nodes: [btn] });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live meta: counts, level stats, rate
+// ─────────────────────────────────────────────────────────────────────────────
+function refreshMeta() {
+  const visible = document.querySelectorAll('#log-list .log-line:not(.is-hidden)');
+  const total   = document.querySelectorAll('#log-list .log-line').length;
+  const hidden  = total - visible.length;
+
+  const c = { INFO:0, SUCCESS:0, WARNING:0, ERROR:0 };
+  visible.forEach(l => { if (c[l.dataset.level] != null) c[l.dataset.level]++; });
+  setText('stat-error',   c.ERROR);
+  setText('stat-warning', c.WARNING);
+  setText('stat-success', c.SUCCESS);
+  setText('stat-info',    c.INFO);
+
+  let txt = `${visible.length} shown`;
+  if (hidden > 0)               txt += ` · ${hidden} hidden`;
+  if (total >= MAX_DOM_LINES)   txt += ` · capped ${MAX_DOM_LINES}`;
+  setText('log-count', txt);
+}
+
+function updateRate() {
+  const cutoff = Date.now() - RATE_WINDOW_MS;
+  _rateTimes = _rateTimes.filter(t => t >= cutoff);
+  setText('stat-rate', _rateTimes.length);
+}
+setInterval(updateRate, 1000);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pipeline stage indicators + connection pill
+// ─────────────────────────────────────────────────────────────────────────────
+function setStage(name, running) {
+  const el = document.getElementById(`stage-${name}`);
+  if (el) el.classList.toggle('running', !!running);
+}
+function applyBotStatus(bs) {
+  if (!bs) return;
+  setStage('fetch',    bs.fetch_running);
+  setStage('analyze',  bs.analyze_running);
+  setStage('generate', bs.generate_running);
+  setStage('submit',   bs.submit_running);
+}
+function updateConnPill() {
+  const pill = document.getElementById('conn-pill');
+  const txt  = document.getElementById('conn-text');
+  pill.classList.remove('conn-live','conn-off','conn-paused');
+  if (_paused)         { pill.classList.add('conn-paused'); txt.textContent = 'PAUSED'; }
+  else if (_connected) { pill.classList.add('conn-live');   txt.textContent = 'LIVE'; }
+  else                 { pill.classList.add('conn-off');    txt.textContent = 'OFFLINE'; }
+}
+function setConnected(v) { _connected = v; updateConnPill(); }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Event wiring — base.html relays socket events as window CustomEvents
+// ─────────────────────────────────────────────────────────────────────────────
+window.addEventListener('new_log',     e => appendLine(e.detail, true));
+window.addEventListener('task_status', e => {
+  const d = e.detail || {};
+  if (d.task) setStage(d.task, d.status === 'running');
+});
+window.addEventListener('stats_updated', e => applyBotStatus(e.detail && e.detail.bot_status));
+
+// Hook the live socket directly for connection state (socket is global in base.html)
+if (typeof socket !== 'undefined' && socket) {
+  setConnected(socket.connected);
+  socket.on('connect',    () => setConnected(true));
+  socket.on('disconnect', () => setConnected(false));
+}
+
+// "/" focuses search; Esc clears it
+document.addEventListener('keydown', e => {
+  const search = document.getElementById('log-search');
+  if (e.key === '/' && document.activeElement !== search) { e.preventDefault(); search.focus(); }
+  else if (e.key === 'Escape' && document.activeElement === search) { search.value=''; onSearch(''); search.blur(); }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Helpers
+// ─────────────────────────────────────────────────────────────────────────────
+function setText(id, v) { const el = document.getElementById(id); if (el) el.textContent = v; }
+
+function fmtTs(isoStr) {
+  if (!isoStr) return '--:--:--';
+  const d = new Date(isoStr);
+  const p = n => String(n).padStart(2, '0');
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+function esc(str) {
+  return String(str)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+    .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+function highlight(msg, q) {
+  const safe = esc(msg);
+  if (!q) return safe;
+  try {
+    const re = new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'ig');
+    return safe.replace(re, '<mark class="hl">$1</mark>');
+  } catch (e) { return safe; }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Init
+// ─────────────────────────────────────────────────────────────────────────────
+lucide.createIcons();
+updateConnPill();
+reloadLogs();
+fetch('/api/stats').then(r => r.ok ? r.json() : null)
+  .then(d => { if (d) applyBotStatus(d.bot_status); })
+  .catch(() => {});
+</script>
+{% endblock %}

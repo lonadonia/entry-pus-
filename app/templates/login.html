@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in · ContestBot</title>
+  <link rel="icon" type="image/x-icon"
+        href="{{ url_for('static', filename='favicon.ico') }}?v=2">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <style>
+    body { background-color:#0a0c14; color:#e2e8f0; font-family:'Inter',sans-serif; }
+    input { background:#0a0c14 !important; border-color:#1e2030 !important; color:#e2e8f0 !important; }
+    input:focus { border-color:#4f6ef7 !important; outline:none !important;
+                  box-shadow:0 0 0 2px rgba(79,110,247,.2) !important; }
+  </style>
+</head>
+<body class="h-full flex items-center justify-center p-4">
+
+  <div class="w-full max-w-sm">
+    <div class="flex justify-center mb-8">
+      <img src="{{ url_for('static', filename='img/growmza_logo.png') }}?v=3"
+           alt="Growmza" class="h-12 w-auto object-contain">
+    </div>
+
+    <div class="bg-[#12141f] border border-[#1e2030] rounded-2xl p-7 shadow-2xl">
+      <h1 class="text-lg font-semibold text-center mb-1">Sign in</h1>
+      <p class="text-xs text-[#64748b] text-center mb-6">Enter your credentials to continue</p>
+
+      <form id="loginForm" class="space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-[#64748b] mb-1.5">Username</label>
+          <input id="username" type="text" autocomplete="username" required
+                 class="w-full px-3 py-2.5 rounded-lg border text-sm"
+                 placeholder="admin">
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-[#64748b] mb-1.5">Password</label>
+          <input id="password" type="password" autocomplete="current-password" required
+                 class="w-full px-3 py-2.5 rounded-lg border text-sm"
+                 placeholder="••••••••">
+        </div>
+
+        <p id="loginError" class="hidden text-xs text-[#ef4444] bg-[#ef4444]/10
+                                  border border-[#ef4444]/20 rounded-lg px-3 py-2"></p>
+
+        <button id="loginBtn" type="submit"
+                class="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg
+                       bg-[#4f6ef7] hover:bg-[#4f6ef7]/85 text-white font-medium
+                       text-sm transition-colors">
+          <i data-lucide="log-in" class="w-4 h-4"></i>
+          Sign in
+        </button>
+      </form>
+    </div>
+
+    <p class="text-center text-[11px] text-[#64748b] mt-6">ContestBot · Growmza</p>
+  </div>
+
+  <script>
+    // Already signed in? skip straight to Space selection.
+    if (localStorage.getItem('cb_auth')) {
+      window.location.replace('/spaces');
+    }
+    lucide.createIcons();
+
+    const form = document.getElementById('loginForm');
+    const errEl = document.getElementById('loginError');
+    const btn = document.getElementById('loginBtn');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      errEl.classList.add('hidden');
+      btn.disabled = true;
+      btn.classList.add('opacity-60');
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      try {
+        const r = await fetch('/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        const data = await r.json();
+        if (r.ok && data.success) {
+          // Persist token for client-side guard + as an X-Auth-Token mirror.
+          localStorage.setItem('cb_auth', data.token);
+          window.location.replace('/spaces');
+        } else {
+          errEl.textContent = data.message || 'Login failed.';
+          errEl.classList.remove('hidden');
+        }
+      } catch (err) {
+        errEl.textContent = 'Network error — please try again.';
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.disabled = false;
+        btn.classList.remove('opacity-60');
+      }
+    });
+  </script>
+</body>
+</html>

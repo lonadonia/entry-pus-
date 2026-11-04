@@ -1,0 +1,925 @@
+{% extends "base.html" %}
+
+{% block title %}AI Agents · ContestBot{% endblock %}
+{% block page_title %}AI Agents{% endblock %}
+
+{% block head %}
+<style>
+  /* ── Cards ──────────────────────────────────────────────────────────────── */
+  .ai-card {
+    background: #12141f;
+    border: 1px solid #1e2030;
+    border-radius: .875rem;
+    overflow: hidden;
+  }
+  .ai-card-header {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 1rem; padding: 1rem 1.25rem;
+    border-bottom: 1px solid #1e2030;
+    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent);
+  }
+  .ai-card-body { padding: 1.25rem; }
+
+  /* ── Selectable tiles (providers + models) ──────────────────────────────── */
+  .tile {
+    position: relative; text-align: left; width: 100%;
+    background: #0a0c14; border: 1px solid #1e2030; border-radius: .75rem;
+    padding: .9rem 1rem; cursor: pointer;
+    transition: border-color .15s, background .15s, transform .15s;
+  }
+  .tile:hover:not(.tile-disabled) { border-color: #2c3050; transform: translateY(-1px); }
+  .tile.selected {
+    border-color: #4f6ef7;
+    background: linear-gradient(180deg, rgba(79,110,247,.12), rgba(79,110,247,.04));
+    box-shadow: 0 0 0 1px rgba(79,110,247,.35);
+  }
+  .tile.selected::after {
+    content: ''; position: absolute; top: .75rem; right: .75rem;
+    width: .5rem; height: .5rem; border-radius: 99px; background: #4f6ef7;
+  }
+  .tile-disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ── Step scaffolding ───────────────────────────────────────────────────── */
+  .step { padding: 1.1rem 0; border-top: 1px dashed #1e2030; }
+  .step:first-child { border-top: none; padding-top: .25rem; }
+  .step-locked { opacity: .4; pointer-events: none; filter: saturate(.4); }
+  .step-num {
+    width: 1.35rem; height: 1.35rem; border-radius: 99px;
+    background: #1e2030; color: #94a3b8;
+    font-size: .7rem; font-weight: 600;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .step-done .step-num { background: rgba(79,110,247,.2); color: #4f6ef7; }
+
+  /* ── Chips & pills ──────────────────────────────────────────────────────── */
+  .chip {
+    display: inline-flex; align-items: center; gap: .25rem;
+    padding: .1rem .45rem; border-radius: .375rem;
+    font-size: .65rem; font-weight: 500; letter-spacing: .01em;
+    background: rgba(255,255,255,.05); color: #94a3b8;
+    border: 1px solid rgba(255,255,255,.06);
+  }
+  .chip-on { background: rgba(79,110,247,.14); color: #8ba2ff; border-color: rgba(79,110,247,.25); }
+  .pill {
+    display: inline-flex; align-items: center; gap: .4rem;
+    padding: .2rem .6rem; border-radius: 99px;
+    font-size: .7rem; font-weight: 500;
+  }
+  .pill-ok   { background: rgba(34,197,94,.12);  color: #22c55e; }
+  .pill-bad  { background: rgba(239,68,68,.12);  color: #ef4444; }
+  .pill-idle { background: rgba(100,116,139,.15); color: #94a3b8; }
+  .pill-warn { background: rgba(245,158,11,.12); color: #f59e0b; }
+
+  /* ── Parameter rows ─────────────────────────────────────────────────────── */
+  .param-row {
+    display: grid; grid-template-columns: minmax(0,1fr) 17rem;
+    gap: 1rem; align-items: center;
+    padding: .85rem 0; border-bottom: 1px solid #16182600;
+    border-bottom-color: #181a28;
+  }
+  .param-row:last-child { border-bottom: none; }
+  @media (max-width: 800px) {
+    .param-row { grid-template-columns: 1fr; gap: .5rem; }
+  }
+  .ai-input {
+    width: 100%; background: #0a0c14; border: 1px solid #1e2030;
+    border-radius: .5rem; padding: .5rem .7rem;
+    font-size: .8rem; color: #e2e8f0;
+  }
+  .ai-input:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Toggle ─────────────────────────────────────────────────────────────── */
+  .toggle {
+    position: relative; width: 2.4rem; height: 1.35rem; border-radius: 99px;
+    background: #1e2030; border: 1px solid #262a3d; cursor: pointer;
+    transition: background .15s; flex-shrink: 0;
+  }
+  .toggle::after {
+    content: ''; position: absolute; top: 2px; left: 2px;
+    width: 1.05rem; height: 1.05rem; border-radius: 99px;
+    background: #64748b; transition: transform .15s, background .15s;
+  }
+  .toggle.on { background: rgba(79,110,247,.3); border-color: #4f6ef7; }
+  .toggle.on::after { transform: translateX(1.02rem); background: #4f6ef7; }
+  .toggle:disabled { opacity: .4; cursor: not-allowed; }
+
+  /* ── Tooltip ────────────────────────────────────────────────────────────── */
+  .tip { position: relative; display: inline-flex; }
+  .tip > .tip-body {
+    visibility: hidden; opacity: 0; position: absolute; z-index: 40;
+    bottom: 140%; left: 50%; transform: translateX(-50%);
+    width: 17rem; padding: .55rem .7rem;
+    background: #0a0c14; border: 1px solid #2c3050; border-radius: .5rem;
+    font-size: .7rem; line-height: 1.45; color: #cbd5e1; font-weight: 400;
+    box-shadow: 0 10px 30px rgba(0,0,0,.55); transition: opacity .12s;
+    white-space: normal; text-align: left; pointer-events: none;
+  }
+  .tip:hover > .tip-body { visibility: visible; opacity: 1; }
+
+  /* ── Buttons ────────────────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
+    padding: .5rem .9rem; border-radius: .5rem;
+    font-size: .78rem; font-weight: 500; transition: all .15s; cursor: pointer;
+    border: 1px solid transparent; white-space: nowrap;
+  }
+  .btn-primary { background: #4f6ef7; color: #fff; }
+  .btn-primary:hover:not(:disabled) { background: #4260e8; }
+  .btn-ghost { background: transparent; border-color: #1e2030; color: #94a3b8; }
+  .btn-ghost:hover:not(:disabled) { border-color: #2c3050; color: #e2e8f0; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* ── Save bar ───────────────────────────────────────────────────────────── */
+  .save-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap;
+    padding: .85rem 1.25rem; border-top: 1px solid #1e2030;
+    background: rgba(79,110,247,.05);
+  }
+
+  .skeleton {
+    background: linear-gradient(90deg, #12141f 25%, #191c2b 50%, #12141f 75%);
+    background-size: 200% 100%; animation: shimmer 1.4s infinite;
+    border-radius: .5rem;
+  }
+  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+  code.inline {
+    background: #0a0c14; border: 1px solid #1e2030; border-radius: .3rem;
+    padding: .05rem .3rem; font-size: .68rem; color: #94a3b8;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="max-w-6xl mx-auto space-y-5" id="ai-root">
+
+  <!-- ── Overview strip ──────────────────────────────────────────────────── -->
+  <div class="grid md:grid-cols-2 gap-4" id="overview">
+    <div class="ai-card"><div class="ai-card-body"><div class="skeleton h-14"></div></div></div>
+    <div class="ai-card"><div class="ai-card-body"><div class="skeleton h-14"></div></div></div>
+  </div>
+
+  <!-- ── Provider credentials ────────────────────────────────────────────── -->
+  <section class="ai-card">
+    <div class="ai-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary flex items-center gap-2">
+          <i data-lucide="key-round" class="w-4 h-4 text-accent"></i>
+          Provider Credentials
+        </h2>
+        <p class="text-xs text-muted mt-0.5">
+          Keys are stored per workspace and shown masked once saved. Each task
+          uses exactly one provider — never two at the same time.
+        </p>
+      </div>
+    </div>
+    <div class="ai-card-body">
+      <div class="grid md:grid-cols-2 gap-4" id="credentials"></div>
+    </div>
+  </section>
+
+  <!-- ── Category sections (chat + image) ────────────────────────────────── -->
+  <section class="ai-card" id="section-chat"></section>
+  <section class="ai-card" id="section-image"></section>
+
+  <p class="text-[11px] text-muted text-center pb-2">
+    Parameters come from each provider's official API documentation — models
+    only ever show the options their own endpoint accepts.
+  </p>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+/* ═══════════════════════════════════════════════════════════════════════════
+   AI Agents — provider → category → model → configuration.
+
+   Everything rendered here is driven by /api/ai/registry, which serialises
+   bot/ai_registry.py. No model, parameter or option is hard-coded in this file,
+   so adding a provider server-side needs no change here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+let REG   = null;   // {categories, providers, models}
+let CFG   = null;   // {categories:{chat,image}, providers:{…}, status:{…}}
+const DRAFT = {};   // category → {provider, model, params}
+
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
+  (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const providerMeta = (id) => REG.providers.find((p) => p.id === id) || {};
+// Only models the operator may actually choose. Editing variants are resolved
+// from the brief analysis (does the contest ship reference files?), so offering
+// them here only invited picking a mode the pipeline would then override.
+const modelsOf = (provider, category) =>
+  REG.models.filter((m) => m.provider === provider && m.category === category
+                        && m.selectable !== false);
+const modelByKey = (key) => REG.models.find((m) => m.key === key);
+
+/* ── Boot ────────────────────────────────────────────────────────────────── */
+
+async function load() {
+  try {
+    const res  = await fetch('/api/ai/registry');
+    if (!res.ok) throw new Error((await res.json()).error || `HTTP ${res.status}`);
+    const data = await res.json();
+    REG = data.registry;
+    CFG = data.config;
+    CFG.health = CFG.health || {};
+
+    for (const cat of REG.categories) {
+      const saved = CFG.categories[cat.id] || {};
+      DRAFT[cat.id] = {
+        provider: saved.provider || null,
+        model:    saved.model || null,
+        params:   JSON.parse(JSON.stringify(saved.params || {})),
+        dirty:    false,
+      };
+    }
+    renderAll();
+  } catch (err) {
+    showToast(`Could not load the AI registry: ${err.message}`, 'error');
+  }
+}
+
+function renderAll() {
+  renderOverview();
+  renderCredentials();
+  REG.categories.forEach(renderCategory);
+  lucide.createIcons();
+}
+
+/* ── Overview ────────────────────────────────────────────────────────────── */
+
+function renderOverview() {
+  document.getElementById('overview').innerHTML = REG.categories.map((cat) => {
+    const saved = CFG.categories[cat.id] || {};
+    const model = modelByKey(saved.model);
+    const meta  = model ? providerMeta(model.provider) : null;
+    const ready = saved.configured;
+    return `
+      <div class="ai-card">
+        <div class="ai-card-body flex items-start justify-between gap-3">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2 text-xs text-muted">
+              <i data-lucide="${esc(cat.icon)}" class="w-3.5 h-3.5"></i>
+              ${esc(cat.label)}
+            </div>
+            <div class="mt-1.5 text-sm font-semibold text-primary truncate">
+              ${model ? esc(model.name) : 'Not configured'}
+            </div>
+            <div class="mt-1 flex items-center gap-2 flex-wrap">
+              ${meta ? `<span class="chip" style="color:${esc(meta.accent)}">
+                          <span class="w-1.5 h-1.5 rounded-full inline-block"
+                                style="background:${esc(meta.accent)}"></span>
+                          ${esc(meta.label)}</span>` : ''}
+              ${model ? `<code class="inline">${esc(model.wire_model)}</code>` : ''}
+            </div>
+          </div>
+          ${(() => {
+            const h = (CFG.health || {})[model ? model.provider : ''] || {};
+            if (h.state === 'insufficient_credits')
+              return `<span class="pill pill-bad flex-shrink-0">
+                        <i data-lucide="credit-card" class="w-3 h-3"></i> No credits</span>`;
+            if (h.state === 'key_limit')
+              return `<span class="pill pill-bad flex-shrink-0">
+                        <i data-lucide="gauge" class="w-3 h-3"></i> Key limit</span>`;
+            if (h.state === 'invalid_key')
+              return `<span class="pill pill-bad flex-shrink-0">
+                        <i data-lucide="key-round" class="w-3 h-3"></i> Invalid key</span>`;
+            if (h.state === 'low_credits')
+              return `<span class="pill pill-warn flex-shrink-0">
+                        <i data-lucide="battery-low" class="w-3 h-3"></i> Low credits</span>`;
+            return `<span class="pill ${ready ? 'pill-ok' : 'pill-warn'} flex-shrink-0">
+                      <i data-lucide="${ready ? 'check' : 'alert-triangle'}" class="w-3 h-3"></i>
+                      ${ready ? 'Ready' : 'Needs API key'}</span>`;
+          })()}
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* ── Credentials ─────────────────────────────────────────────────────────── */
+
+function renderCredentials() {
+  document.getElementById('credentials').innerHTML = REG.providers.map((p) => {
+    const state  = CFG.providers[p.id] || {};
+    const health = (CFG.health || {})[p.id] || {};
+
+    // One pill per real provider state — never a vague "failed".
+    const PILLS = {
+      no_key:               ['pill-warn', 'alert-triangle', 'No key saved'],
+      connected:            ['pill-ok',   'plug-zap',       'Connected'],
+      low_credits:          ['pill-warn', 'battery-low',    'Low credits'],
+      insufficient_credits: ['pill-bad',  'credit-card',    'Insufficient credits'],
+      key_limit:            ['pill-bad',  'gauge',          'Key credit limit'],
+      invalid_key:          ['pill-bad',  'key-round',      'Invalid key'],
+      rate_limited:         ['pill-warn', 'timer',          'Rate limited'],
+      unavailable:          ['pill-bad',  'unplug',         'Unavailable'],
+      unknown:              ['pill-idle', 'help-circle',    'Not tested'],
+    };
+    const [cls, icon, text] = PILLS[health.state] || PILLS.unknown;
+    // A capped key is shown as blocked, but Test model stays ENABLED for it:
+    // that paid probe is the only check that can see the limit lifted.
+    const blocked = health.state === 'insufficient_credits'
+                 || health.state === 'invalid_key'
+                 || health.state === 'key_limit';
+    const modelTestBlocked = health.state === 'insufficient_credits'
+                          || health.state === 'invalid_key';
+
+    return `
+      <div class="rounded-xl border ${blocked ? 'border-danger/30' : 'border-border'}
+                  bg-bg p-4 flex flex-col gap-3">
+        <div class="flex items-start justify-between gap-2">
+          <div>
+            <div class="flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full" style="background:${esc(p.accent)}"></span>
+              <span class="text-sm font-semibold text-primary">${esc(p.label)}</span>
+            </div>
+            <p class="text-[11px] text-muted mt-1 leading-snug">${esc(p.tagline)}</p>
+          </div>
+          <span class="pill ${cls} flex-shrink-0">
+            <i data-lucide="${icon}" class="w-3 h-3"></i> ${esc(text)}
+          </span>
+        </div>
+
+        ${health.balance_supported ? `
+          <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg
+                      bg-surface border border-border">
+            <div>
+              <div class="text-[10px] uppercase tracking-wider text-muted">Balance</div>
+              <div class="text-sm font-semibold tabular-nums
+                          ${health.credits === null || health.credits === undefined
+                            ? 'text-muted'
+                            : health.credits > 0 ? 'text-primary' : 'text-danger'}">
+                ${health.credits === null || health.credits === undefined
+                  ? 'Unknown'
+                  : `${Number(health.credits).toLocaleString(undefined,
+                       { maximumFractionDigits: 2 })} credits`}
+              </div>
+            </div>
+            <div class="text-right">
+              <div class="text-[10px] uppercase tracking-wider text-muted">Last checked</div>
+              <div class="text-[11px] text-muted">${relativeTime(health.checked_at)}</div>
+            </div>
+          </div>` : ''}
+
+        <div class="flex gap-2">
+          <input type="password" class="ai-input" id="key-${esc(p.id)}"
+                 autocomplete="off" spellcheck="false"
+                 placeholder="${state.has_key
+                   ? `Saved ${esc(state.key_hint)} — type to replace`
+                   : `Paste your ${esc(p.label)} API key`}">
+          <button class="btn btn-primary" onclick="saveKey('${esc(p.id)}')"
+                  id="save-key-${esc(p.id)}">Save</button>
+        </div>
+
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div class="flex items-center gap-2">
+            <button class="btn btn-ghost" onclick="testKey('${esc(p.id)}')"
+                    id="test-key-${esc(p.id)}" ${state.has_key ? '' : 'disabled'}
+                    title="Checks authentication and balance — costs no credits">
+              <i data-lucide="activity" class="w-3.5 h-3.5"></i> Test connection
+            </button>
+            <button class="btn btn-ghost" onclick="testModel('${esc(p.id)}')"
+                    id="test-model-${esc(p.id)}"
+                    ${state.has_key && !modelTestBlocked ? '' : 'disabled'}
+                    title="${modelTestBlocked
+                      ? 'Blocked — resolve the provider state first'
+                      : health.state === 'key_limit'
+                        ? 'After raising the key limit, press this to verify and resume parked contests'
+                        : 'Sends one tiny real request — spends a few credits'}">
+              <i data-lucide="flask-conical" class="w-3.5 h-3.5"></i> Test model
+            </button>
+            ${state.has_key ? `
+              <button class="btn btn-ghost" onclick="clearKey('${esc(p.id)}')"
+                      title="Remove the stored key">
+                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
+              </button>` : ''}
+          </div>
+          <a href="${esc(p.docs_url)}" target="_blank" rel="noopener"
+             class="text-[11px] text-muted hover:text-accent flex items-center gap-1">
+            API docs <i data-lucide="external-link" class="w-3 h-3"></i>
+          </a>
+        </div>
+
+        <p class="text-[11px] leading-snug ${blocked ? 'text-danger' : 'text-muted'}"
+           id="cred-msg-${esc(p.id)}">${esc(health.message || '')}</p>
+      </div>`;
+  }).join('');
+}
+
+function relativeTime(epochSeconds) {
+  if (!epochSeconds) return 'never';
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
+  if (secs < 60) return 'just now';
+  if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
+  return `${Math.floor(secs / 86400)} d ago`;
+}
+
+async function saveKey(provider) {
+  const input = document.getElementById(`key-${provider}`);
+  const value = input.value.trim();
+  if (!value) { showToast('Paste a key first.', 'warning'); return; }
+
+  const btn = document.getElementById(`save-key-${provider}`);
+  withBusy(btn, 'Saving…', async () => {
+    const res  = await fetch('/api/ai/credentials', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, api_key: value }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+    CFG.providers[provider] = { has_key: true, key_hint: data.key_hint };
+    input.value = '';
+    showToast(data.message, 'success');
+    renderCredentials(); renderOverview(); lucide.createIcons();
+  });
+}
+
+async function clearKey(provider) {
+  const label = providerMeta(provider).label;
+  const ok = await showConfirmModal(
+    `Remove the ${label} key?`,
+    `Any task configured to use ${label} will stop until a new key is saved.`,
+    'Remove');
+  if (!ok) return;
+  const res = await fetch(`/api/ai/credentials/${provider}`, { method: 'DELETE' });
+  const data = await res.json();
+  if (!res.ok) { showToast(data.error || 'Failed', 'error'); return; }
+  CFG.providers[provider] = { has_key: false, key_hint: '' };
+  delete (CFG.status || {})[provider];
+  showToast('Key removed.', 'info');
+  renderCredentials(); renderOverview(); lucide.createIcons();
+}
+
+async function testKey(provider) {
+  const btn = document.getElementById(`test-key-${provider}`);
+  const msg = document.getElementById(`cred-msg-${provider}`);
+  msg.textContent = 'Checking authentication and balance…';
+  msg.className = 'text-[11px] leading-snug text-muted';
+
+  withBusy(btn, 'Testing…', async () => {
+    const res  = await fetch('/api/ai/test', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Test failed');
+
+    CFG.health = CFG.health || {};
+    CFG.health[provider] = data.status || CFG.health[provider];
+    renderCredentials(); renderOverview(); lucide.createIcons();
+
+    if (data.requeued_contests) {
+      showToast(`${data.message}`, 'success');
+    } else {
+      showToast(data.message, data.ok ? 'success' : 'error');
+    }
+  });
+}
+
+async function testModel(provider) {
+  const btn = document.getElementById(`test-model-${provider}`);
+  const msg = document.getElementById(`cred-msg-${provider}`);
+  msg.textContent = 'Sending one minimal request…';
+  msg.className = 'text-[11px] leading-snug text-muted';
+
+  withBusy(btn, 'Testing…', async () => {
+    const res  = await fetch('/api/ai/test-model', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Test failed');
+
+    msg.textContent = data.message;
+    msg.className = `text-[11px] leading-snug ${data.ok ? 'text-muted' : 'text-danger'}`;
+    showToast(data.message, data.ok ? 'success' : (data.skipped ? 'warning' : 'error'));
+
+    // A model test can reveal a state the free check could not.
+    const health = await fetch(`/api/ai/balance?provider=${provider}`);
+    if (health.ok) {
+      CFG.health = CFG.health || {};
+      CFG.health[provider] = await health.json();
+      renderCredentials(); renderOverview(); lucide.createIcons();
+    }
+  });
+}
+
+/* ── Category section ────────────────────────────────────────────────────── */
+
+function renderCategory(cat) {
+  const host  = document.getElementById(`section-${cat.id}`);
+  const draft = DRAFT[cat.id];
+  const providersHere = cat.providers;
+  const hasProvider = !!draft.provider;
+  const hasModel    = !!draft.model;
+
+  host.innerHTML = `
+    <div class="ai-card-header">
+      <div>
+        <h2 class="text-sm font-semibold text-primary flex items-center gap-2">
+          <i data-lucide="${esc(cat.icon)}" class="w-4 h-4 text-accent"></i>
+          ${esc(cat.label)}
+        </h2>
+        <p class="text-xs text-muted mt-0.5">${esc(cat.description)}</p>
+      </div>
+      <span class="pill pill-idle flex-shrink-0">
+        ${hasModel ? 'Step 3 of 3' : hasProvider ? 'Step 2 of 3' : 'Step 1 of 3'}
+      </span>
+    </div>
+
+    <div class="ai-card-body pt-2">
+      <!-- Step 1 — provider -->
+      <div class="step ${hasProvider ? 'step-done' : ''}">
+        ${stepHeader(1, 'Provider',
+          'One provider per task. Choosing here decides which models are available.')}
+        <div class="grid sm:grid-cols-2 gap-3 mt-3">
+          ${providersHere.map((pid) => providerTile(cat.id, pid)).join('')}
+        </div>
+      </div>
+
+      <!-- Step 2 — model -->
+      <div class="step ${hasModel ? 'step-done' : ''} ${hasProvider ? '' : 'step-locked'}">
+        ${stepHeader(2, 'Model',
+          hasProvider
+            ? `Models published by ${esc(providerMeta(draft.provider).label)} for this task.`
+            : 'Select a provider first.')}
+        <div class="grid sm:grid-cols-2 gap-3 mt-3">
+          ${hasProvider
+            ? modelsOf(draft.provider, cat.id).map((m) => modelTile(cat.id, m)).join('')
+            : '<div class="skeleton h-20"></div><div class="skeleton h-20"></div>'}
+        </div>
+      </div>
+
+      <!-- Step 3 — configuration -->
+      <div class="step ${hasModel ? '' : 'step-locked'}" id="config-${esc(cat.id)}">
+        ${stepHeader(3, 'Model configuration',
+          hasModel
+            ? 'Only the parameters this exact model documents.'
+            : 'Select a model to configure it.')}
+        ${hasModel ? renderParams(cat.id) : '<div class="skeleton h-24 mt-3"></div>'}
+      </div>
+    </div>
+
+    ${hasModel ? saveBar(cat.id) : ''}`;
+}
+
+function stepHeader(n, title, hint) {
+  return `
+    <div class="flex items-center gap-2.5">
+      <span class="step-num">${n}</span>
+      <div>
+        <div class="text-xs font-semibold text-primary">${esc(title)}</div>
+        <div class="text-[11px] text-muted">${hint}</div>
+      </div>
+    </div>`;
+}
+
+function providerTile(category, pid) {
+  const p = providerMeta(pid);
+  const selected = DRAFT[category].provider === pid;
+  const hasKey = (CFG.providers[pid] || {}).has_key;
+  const count = modelsOf(pid, category).length;
+  return `
+    <button class="tile ${selected ? 'selected' : ''}"
+            onclick="pickProvider('${esc(category)}','${esc(pid)}')">
+      <div class="flex items-center gap-2">
+        <span class="w-2.5 h-2.5 rounded-full" style="background:${esc(p.accent)}"></span>
+        <span class="text-sm font-semibold text-primary">${esc(p.label)}</span>
+      </div>
+      <p class="text-[11px] text-muted mt-1 leading-snug pr-4">${esc(p.tagline)}</p>
+      <div class="flex items-center gap-1.5 mt-2">
+        <span class="chip">${count} model${count === 1 ? '' : 's'}</span>
+        <span class="chip ${hasKey ? 'chip-on' : ''}">
+          ${hasKey ? 'Key saved' : 'No key'}
+        </span>
+      </div>
+    </button>`;
+}
+
+function modelTile(category, m) {
+  const selected = DRAFT[category].model === m.key;
+  const caps = Object.entries(m.capabilities || {})
+    .filter(([, on]) => on)
+    .map(([name]) => `<span class="chip chip-on">${esc(name.replace(/_/g, ' '))}</span>`)
+    .join('');
+  return `
+    <button class="tile ${selected ? 'selected' : ''}"
+            onclick="pickModel('${esc(category)}','${esc(m.key)}')">
+      <div class="text-sm font-semibold text-primary pr-5">${esc(m.name)}</div>
+      <p class="text-[11px] text-muted mt-1 leading-snug">${esc(m.tagline)}</p>
+      <div class="flex items-center gap-1.5 mt-2 flex-wrap">${caps}</div>
+      <div class="flex items-center justify-between mt-2 gap-2 min-w-0">
+        <code class="inline truncate min-w-0">${esc(m.endpoint)}</code>
+        <span class="text-[10px] text-muted hover:text-accent flex items-center gap-1 flex-shrink-0"
+              onclick="event.stopPropagation(); window.open('${esc(m.docs_url)}','_blank')">
+          docs <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
+        </span>
+      </div>
+    </button>`;
+}
+
+function pickProvider(category, pid) {
+  const draft = DRAFT[category];
+  if (draft.provider === pid) return;
+  draft.provider = pid;
+  // One provider per task: the previous model belonged to another provider, so
+  // it cannot carry over. Pre-select this provider's first model.
+  const first = modelsOf(pid, category)[0];
+  draft.model = first ? first.key : null;
+  draft.params = first ? paramsFor(category, first.key) : {};
+  draft.dirty = true;
+  renderCategory(REG.categories.find((c) => c.id === category));
+  lucide.createIcons();
+}
+
+function pickModel(category, key) {
+  const draft = DRAFT[category];
+  if (draft.model === key) return;
+  draft.model = key;
+  draft.params = paramsFor(category, key);
+  draft.dirty = true;
+  renderCategory(REG.categories.find((c) => c.id === category));
+  lucide.createIcons();
+}
+
+/** Saved params for this model if we have them, else the documented defaults. */
+function paramsFor(category, key) {
+  const saved = (CFG.categories[category] || {}).all_params || {};
+  if (saved[key]) return JSON.parse(JSON.stringify(saved[key]));
+  const model = modelByKey(key);
+  const out = {};
+  (model.params || []).forEach((p) => { if (!p.unavailable) out[p.key] = p.default; });
+  return out;
+}
+
+/* ── Parameters ──────────────────────────────────────────────────────────── */
+
+function renderParams(category) {
+  const draft = DRAFT[category];
+  const model = modelByKey(draft.model);
+  const basic    = model.params.filter((p) => p.group !== 'advanced');
+  const advanced = model.params.filter((p) => p.group === 'advanced');
+
+  const modeNote = modeHint(model);
+
+  return `
+    <div class="mt-3">
+      ${modeNote ? `
+        <div class="flex items-start gap-2 px-3 py-2 mb-3 rounded-lg
+                    bg-accent/5 border border-accent/20 text-[11px] text-muted">
+          <i data-lucide="info" class="w-3.5 h-3.5 text-accent flex-shrink-0 mt-0.5"></i>
+          <span>${modeNote}</span>
+        </div>` : ''}
+
+      <div>${basic.map((p) => paramRow(category, p)).join('')}</div>
+
+      ${advanced.length ? `
+        <details class="mt-3 rounded-lg border border-border bg-bg/40">
+          <summary class="px-3 py-2 text-xs text-muted cursor-pointer select-none
+                          hover:text-primary flex items-center gap-2">
+            <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i>
+            Advanced parameters (${advanced.length})
+          </summary>
+          <div class="px-3 pb-2">
+            ${advanced.map((p) => paramRow(category, p)).join('')}
+          </div>
+        </details>` : ''}
+    </div>`;
+}
+
+/** Explains automatic text-to-image / image-to-image switching. */
+function modeHint(model) {
+  if (model.category !== 'image') return '';
+  if (model.sibling_i2i) {
+    return `Generation mode is decided per contest by the brief analysis: with
+            reference files the bot uses this family's image-to-image model,
+            without them it generates from the prompt alone. Nothing to choose.`;
+  }
+  if ((model.capabilities || {}).reference_images) {
+    return `Generation mode is decided per contest by the brief analysis: a
+            contest's reference files are sent automatically, and without them
+            the same model generates from the prompt alone.`;
+  }
+  return '';
+}
+
+function paramRow(category, spec) {
+  const draft = DRAFT[category];
+  if (spec.show_if) {
+    const current = draft.params[spec.show_if.key];
+    if (String(current) !== String(spec.show_if.equals)) return '';
+  }
+  const disabled = !!spec.unavailable;
+  const id = `p-${category}-${spec.key}`;
+
+  return `
+    <div class="param-row">
+      <div class="min-w-0">
+        <div class="text-xs font-medium ${disabled ? 'text-muted' : 'text-primary'}
+                    flex items-center gap-1.5">
+          ${esc(spec.label)}
+          ${spec.help ? `
+            <span class="tip">
+              <i data-lucide="help-circle" class="w-3 h-3 text-muted"></i>
+              <span class="tip-body">${esc(spec.help)}</span>
+            </span>` : ''}
+          ${disabled ? '<span class="chip">unavailable</span>' : ''}
+        </div>
+        ${spec.wire && spec.wire !== spec.key && !disabled
+          ? `<code class="inline mt-1 inline-block">${esc(spec.wire)}</code>` : ''}
+      </div>
+      <div>${paramControl(category, spec, id)}</div>
+    </div>`;
+}
+
+function paramControl(category, spec, id) {
+  const value = DRAFT[category].params[spec.key];
+  const onchange = `onParamChange('${esc(category)}','${esc(spec.key)}', this)`;
+
+  if (spec.unavailable) {
+    return `<div class="flex justify-end"><button class="toggle" disabled></button></div>`;
+  }
+
+  switch (spec.type) {
+    case 'select':
+      return `
+        <select class="ai-input" id="${id}" onchange="${onchange}">
+          ${spec.options.map((o) => `
+            <option value="${esc(o.value)}" ${String(value) === String(o.value) ? 'selected' : ''}>
+              ${esc(o.label)}
+            </option>`).join('')}
+        </select>`;
+
+    case 'int':
+    case 'float':
+      return `
+        <input type="number" class="ai-input" id="${id}" value="${esc(value)}"
+               ${spec.min !== null && spec.min !== undefined ? `min="${spec.min}"` : ''}
+               ${spec.max !== null && spec.max !== undefined ? `max="${spec.max}"` : ''}
+               step="${spec.step || 1}" oninput="${onchange}">`;
+
+    case 'bool':
+      return `
+        <div class="flex justify-end">
+          <button class="toggle ${value ? 'on' : ''}" id="${id}"
+                  onclick="toggleParam('${esc(category)}','${esc(spec.key)}', this)"></button>
+        </div>`;
+
+    case 'textarea':
+      return `
+        <textarea class="ai-input" id="${id}" rows="3"
+                  placeholder="${esc(spec.placeholder || '')}"
+                  ${spec.maxlength ? `maxlength="${spec.maxlength}"` : ''}
+                  oninput="${onchange}">${esc(value || '')}</textarea>`;
+
+    default:
+      return `
+        <input type="text" class="ai-input" id="${id}" value="${esc(value || '')}"
+               placeholder="${esc(spec.placeholder || '')}" oninput="${onchange}">`;
+  }
+}
+
+function onParamChange(category, key, el) {
+  const model = modelByKey(DRAFT[category].model);
+  const spec  = model.params.find((p) => p.key === key);
+  let value = el.value;
+
+  if (spec.type === 'int' || spec.type === 'float') {
+    value = spec.type === 'int' ? parseInt(value, 10) : parseFloat(value);
+    if (Number.isNaN(value)) return;                       // mid-typing
+    if (spec.min !== null && spec.min !== undefined && value < spec.min) value = spec.min;
+    if (spec.max !== null && spec.max !== undefined && value > spec.max) value = spec.max;
+  }
+  DRAFT[category].params[key] = value;
+  DRAFT[category].dirty = true;
+
+  // A select can gate other rows (Custom canvas → width/height), so re-render
+  // the configuration step; plain typing must not steal focus.
+  if (spec.type === 'select') {
+    refreshConfig(category);
+  } else {
+    markDirty(category);
+  }
+}
+
+function toggleParam(category, key, el) {
+  const next = !el.classList.contains('on');
+  el.classList.toggle('on', next);
+  DRAFT[category].params[key] = next;
+  markDirty(category);
+}
+
+function refreshConfig(category) {
+  const host = document.getElementById(`config-${category}`);
+  const model = modelByKey(DRAFT[category].model);
+  host.innerHTML = stepHeader(3, 'Model configuration',
+    'Only the parameters this exact model documents.') + renderParams(category);
+  markDirty(category);
+  lucide.createIcons();
+}
+
+/* ── Save ────────────────────────────────────────────────────────────────── */
+
+function saveBar(category) {
+  const draft = DRAFT[category];
+  const model = modelByKey(draft.model);
+  const meta  = providerMeta(draft.provider);
+  const hasKey = (CFG.providers[draft.provider] || {}).has_key;
+  return `
+    <div class="save-bar" id="savebar-${esc(category)}">
+      <div class="text-[11px] text-muted flex items-center gap-2 flex-wrap">
+        <i data-lucide="route" class="w-3.5 h-3.5 text-accent"></i>
+        <span>${esc(meta.label)} → ${esc(model.name)} →
+          <code class="inline">${esc(model.wire_model)}</code></span>
+        ${hasKey ? '' : `<span class="pill pill-warn">Add the ${esc(meta.label)} key above</span>`}
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] text-muted" id="dirty-${esc(category)}">
+          ${draft.dirty ? 'Unsaved changes' : ''}
+        </span>
+        <button class="btn btn-ghost" onclick="resetDefaults('${esc(category)}')">
+          <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Defaults
+        </button>
+        <button class="btn btn-primary" id="save-${esc(category)}"
+                onclick="saveCategory('${esc(category)}')">
+          <i data-lucide="save" class="w-3.5 h-3.5"></i> Save configuration
+        </button>
+      </div>
+    </div>`;
+}
+
+function markDirty(category) {
+  DRAFT[category].dirty = true;
+  const el = document.getElementById(`dirty-${category}`);
+  if (el) el.textContent = 'Unsaved changes';
+}
+
+function resetDefaults(category) {
+  const model = modelByKey(DRAFT[category].model);
+  const out = {};
+  model.params.forEach((p) => { if (!p.unavailable) out[p.key] = p.default; });
+  DRAFT[category].params = out;
+  refreshConfig(category);
+  showToast('Reset to the documented defaults — not saved yet.', 'info');
+}
+
+async function saveCategory(category) {
+  const draft = DRAFT[category];
+  const btn = document.getElementById(`save-${category}`);
+
+  withBusy(btn, 'Saving…', async () => {
+    const res = await fetch('/api/ai/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        category, provider: draft.provider,
+        model: draft.model, params: draft.params,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Save failed');
+
+    // Adopt the server's validated values — it clamps and drops.
+    draft.params = data.params;
+    draft.dirty = false;
+    CFG.categories[category] = {
+      provider: draft.provider, model: draft.model,
+      params: data.params,
+      all_params: { ...(CFG.categories[category].all_params || {}),
+                    [draft.model]: data.params },
+      configured: data.has_key,
+    };
+    (data.warnings || []).forEach((w) => showToast(w, 'warning'));
+    showToast(data.message, 'success');
+    renderOverview();
+    renderCategory(REG.categories.find((c) => c.id === category));
+    lucide.createIcons();
+  });
+}
+
+/* ── Helpers ─────────────────────────────────────────────────────────────── */
+
+async function withBusy(btn, label, fn, always) {
+  if (!btn) return;
+  const original = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> ${label}`;
+  lucide.createIcons({ nodes: [btn] });
+  try {
+    await fn();
+  } catch (err) {
+    showToast(err.message || String(err), 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+    lucide.createIcons({ nodes: [btn] });
+    if (always) always();
+  }
+}
+
+load();
+</script>
+{% endblock %}

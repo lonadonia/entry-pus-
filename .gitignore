@@ -1,0 +1,32 @@
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# Real values live only on the server; copy .env.example to .env to start.
+.env
+# TLS certificates and private keys (nginx bind-mounts ./deploy/tls).
+deploy/tls/
+# Per-machine Claude Code permissions.
+.claude/settings.local.json
+
+# ── Runtime data (bind-mounted by docker compose) ────────────────────────────
+# Client attachments, generated designs and bid debug snapshots.
+storage/
+app/static/temp/
+
+# ── Saved Freelancer pages ───────────────────────────────────────────────────
+# Captured from a logged-in session; reference only, unused at runtime.
+Freelancer/
+
+# ── Python bytecode / caches ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.pytest_cache/
+*.egg-info/
+venv/
+.venv/
+env/
+
+# ── Editor / OS cruft ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store

@@ -1,0 +1,95 @@
+version: "3.9"
+
+# docker-compose reads .env automatically — define all ${VAR} references there.
+
+services:
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-contestbot}
+      POSTGRES_USER:     ${POSTGRES_USER:-contestbot}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contestbot}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-contestbot} -d ${POSTGRES_DB:-contestbot}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Flask / Gunicorn ─────────────────────────────────────────────────────────
+  web:
+    build: .
+    restart: unless-stopped
+    command: gunicorn wsgi:app -w 2 -k eventlet --bind 0.0.0.0:5000 --timeout 120 --log-level info
+    env_file: .env
+    environment:
+      DATABASE_URL:          postgresql://${POSTGRES_USER:-contestbot}:${POSTGRES_PASSWORD:-contestbot}@postgres:5432/${POSTGRES_DB:-contestbot}
+      REDIS_URL:             redis://redis:6379/0
+      CELERY_BROKER_URL:     redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./storage:/app/storage
+      - ./app/static/temp:/app/app/static/temp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Celery Worker ────────────────────────────────────────────────────────────
+  celery_worker:
+    build: .
+    restart: unless-stopped
+    command: celery -A tasks.celery_tasks worker --loglevel=info --concurrency=1
+    env_file: .env
+    environment:
+      DATABASE_URL:          postgresql://${POSTGRES_USER:-contestbot}:${POSTGRES_PASSWORD:-contestbot}@postgres:5432/${POSTGRES_DB:-contestbot}
+      REDIS_URL:             redis://redis:6379/0
+      CELERY_BROKER_URL:     redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ./storage:/app/storage
+      - ./app/static/temp:/app/app/static/temp
+    depends_on:
+      - web
+      - redis
+      - postgres
+
+  # ── Nginx ────────────────────────────────────────────────────────────────────
+  nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # Static files served directly — avoids hitting gunicorn for every asset
+      - ./app/static:/app/static:ro
+      # Generated designs served via /storage/ — see nginx.conf location block
+      - ./storage:/app/storage:ro
+    depends_on:
+      - web
+
+volumes:
+  postgres_data:
+  redis_data:

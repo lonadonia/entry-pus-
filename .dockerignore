@@ -1,0 +1,42 @@
+# ── Version control ──────────────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Python bytecode / caches ─────────────────────────────────────────────────
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+*.egg-info/
+
+# ── Virtualenvs ──────────────────────────────────────────────────────────────
+venv/
+.venv/
+env/
+
+# ── Secrets ──────────────────────────────────────────────────────────────────
+# Injected at runtime by docker-compose `env_file: .env` — never bake into a layer.
+.env
+# TLS certificates and private keys: nginx bind-mounts ./deploy/tls at runtime.
+# Copied into the app image they were a private key in every layer, and a
+# root-only certbot directory (deploy/tls/<domain>, 0700) breaks the build
+# outright with "permission denied".
+deploy/tls/
+
+# ── Runtime data (bind-mounted at runtime; must NOT be copied into the image) ──
+# ./storage and ./app/static/temp are mounted over the image paths by compose,
+# so baking them in just bloats every image (storage alone was ~900 MB).
+storage/
+app/static/temp/
+
+# ── Saved Freelancer DOM snapshots — reference material, unused at runtime ─────
+Freelancer/
+
+# ── Editor / OS cruft ────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
