@@ -901,11 +901,18 @@ def overused_phrases(recent: list, n: int = 4, min_count: int = 3, limit: int = 
     by hand.
     """
     counts: Counter = Counter()
+    first_seen: dict = {}
     for text in recent or []:
         words = [w.lower().replace("’", "'") for w in _WORD_RE.findall(text or "")]
-        counts.update({" ".join(words[i:i + n]) for i in range(len(words) - n + 1)})
+        # Each run once per bid, in reading order — a set here made phrases tied
+        # on count come out in hash order, so the avoid-list changed per process.
+        grams = list(dict.fromkeys(" ".join(words[i:i + n])
+                                   for i in range(len(words) - n + 1)))
+        for gram in grams:
+            first_seen.setdefault(gram, len(first_seen))
+        counts.update(grams)
     out: list = []
-    for gram, count in counts.most_common():
+    for gram, count in sorted(counts.items(), key=lambda kv: (-kv[1], first_seen[kv[0]])):
         if count < min_count:
             break
         if sum(token not in _PHRASE_STOP for token in gram.split()) < 2:

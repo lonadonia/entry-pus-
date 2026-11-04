@@ -1698,15 +1698,16 @@ def fetch_all_spaces():
 @celery.task(name="tasks.project_discovery_tick")
 def project_discovery_tick():
     """Every minute (beat): create/re-arm the runs that are due and dispatch them."""
-    from datetime import datetime, timezone
     _stamp(LAST_TICK_KEY)
     with _app_ctx():
         from app import db
         from app.models import DiscoveryRun
-        from bot.project_discovery import due_runs
+        from bot import project_discovery
         queued = _queued_task_ids("tasks.daily_project_discovery")
         dispatched = []
-        for run_id in due_runs(datetime.now(timezone.utc), queued):
+        # The discovery module's own clock (UTC now), so the tick and the runs
+        # it creates can never disagree about what time it is.
+        for run_id in project_discovery.due_runs(project_discovery._now(), queued):
             run = db.session.get(DiscoveryRun, run_id)
             if run is not None:
                 daily_project_discovery.delay(run.space_id, run.id)
