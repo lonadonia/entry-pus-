@@ -416,9 +416,23 @@ def test_must_end_by_inviting_a_reply():
     assert validate_proposal(flat + " Send me a message and we can go through the first batch.", rules)["ok"]
 
 
-def test_invitation_check_only_applies_to_english():
-    rules = ProposalRules(max_words=250, min_words=5, profile_text=FACTS, language="es")
-    text = "Cuarenta y siete fotos quedan consistentes si la regla se automatiza. Empezaría por ahí."
+def test_invitation_check_covers_spanish_and_french():
+    """6 of the 41 briefs in the 2026-11-04 study were Spanish or French."""
+    es = ProposalRules(max_words=250, min_words=5, profile_text=FACTS, language="es")
+    flat = "Cuarenta y siete fotos quedan consistentes si la regla se automatiza. Lo haría así."
+    assert any("invitation" in p for p in validate_proposal(flat, es)["problems"])
+    asks = ("Cuarenta y siete fotos quedan consistentes si la regla se automatiza. "
+            "¿Prefieres fondo blanco puro o un gris muy claro?")
+    assert not any("invitation" in p for p in validate_proposal(asks, es)["problems"])
+    fr = ProposalRules(max_words=250, min_words=5, profile_text=FACTS, language="fr")
+    talk = ("La livraison par e-mail tient si les fichiers restent légers. "
+            "Parlons du poids de vos fichiers avant de choisir.")
+    assert not any("invitation" in p for p in validate_proposal(talk, fr)["problems"])
+
+
+def test_invitation_check_skips_languages_it_has_no_pattern_for():
+    rules = ProposalRules(max_words=250, min_words=5, profile_text=FACTS, language="de")
+    text = "Siebenundvierzig Fotos bleiben einheitlich, wenn die Regel automatisiert wird."
     assert not any("invitation" in p for p in validate_proposal(text, rules)["problems"])
 
 

@@ -10,6 +10,7 @@ computed and clamped here, where they are testable and can never hallucinate.
 
 import math
 import re
+from collections import Counter
 from functools import lru_cache
 from dataclasses import dataclass, field
 from typing import Optional
@@ -413,6 +414,26 @@ BANNED_PHRASES = (
     "listed skills",
     "my verified",
     "verified profile",
+    # The closings of 1,230 competitor bids were dominated by these, and ours had
+    # drifted into "If you reply, I'll first…" (10 of 41).
+    "choose me",
+    "hire me",
+    "award me",
+    "if you reply",
+    "once you reply",
+    "si me respondes",
+    "si vous me répondez",
+    "elíjame",
+    "elijame",
+    "contráteme",
+    "choisissez-moi",
+    "n'hésitez pas",
+    "quedo atento",
+    "quedo a la espera",
+    "let's connect",
+    "ready to start immediately",
+    "i am the right",
+    "i'm the right",
 )
 
 # Formula openings. 48 of the last 85 proposals opened "The key…" and 7 "The tricky…"
@@ -425,7 +446,11 @@ _FORMULA_OPENER_RE = re.compile(
     r"|thanks\s+for|thank\s+you|i\s+(?:have\s+|'ve\s+)?(?:read|reviewed|saw|seen|came\s+across|"
     r"went\s+through|looked\s+at|understand)\b|i'?ve\s+(?:read|reviewed|gone)\b"
     r"|as\s+an?\s|my\s+name\b|i\s+am\s+an?\s|i'?m\s+an?\s|with\s+over\b|for\s"
-    r"|la\s+clave\b|lo\s+clave\b|lo\s+importante\b|hola\b|la\s+cl[eé]\b|l'essentiel\b|bonjour\b)",
+    # "I'd start by…" opened 19 of our 41 bids once "The key…" was banned.
+    r"|i(?:'d|’d|\s+would|'ll|’ll|\s+will)\s+(?:start|begin|first)\b|first(?:\s+of\s+all)?,|to\s+(?:start|begin),"
+    r"|la\s+clave\b|lo\s+clave\b|lo\s+importante\b|hola\b|la\s+cl[eé]\b|l'essentiel\b|bonjour\b"
+    r"|buen[oa]s\s+(?:d[ií]as|tardes|noches)\b|estimad[oa]s?\b|saludos\b|empezar[ií]a\b|comenzar[ií]a\b"
+    r"|primero\b|para\s+empezar\b|salut\b|cher\b|ch[eè]re\b|je\s+commencerais\b|tout\s+d'abord\b)",
     re.IGNORECASE,
 )
 
@@ -516,6 +541,43 @@ _INVITE_RE = re.compile(
 _RECENCY_RE = re.compile(
     r"\bI(?:['’]ve| have)?\s+(?:just|recently)\s+(?:designed|built|developed|created|completed|"
     r"delivered|finished|worked|shipped|launched)\b", re.IGNORECASE)
+# A résumé line in place of proof ("My background includes React, APIs and databases").
+# 12 of our 41 bids carried one, 10 the identical "4.8/5 rating across 21 client reviews".
+_RESUME_LINE_RE = re.compile(
+    r"\b(?:my|mi|mon|ma)\s+(?:background|experience|experiencia|expérience|expertise|skill\s*set|skills)"
+    r"\s+(?:includes?|spans?|covers?|incluye|abarca|comprend|inclut|couvre)\b"
+    r"|\bmy\s+freelancer\s+profile\s+(?:includes|shows|has)\b", re.IGNORECASE)
+# "not X but Y" / "rather than": once can be insight, 18 of 41 bids leaned on it.
+_CONTRAST_RE = re.compile(
+    r"\b(?:rather\s+than|not\s+just|not\s+simply|not\s+only|instead\s+of|m[aá]s\s+que|"
+    r"en\s+lugar\s+de|no\s+solo|no\s+s[oó]lo|plut[oô]t\s+que|pas\s+seulement|au\s+lieu\s+de)\b",
+    re.IGNORECASE)
+# Free work is a promise the operator never made.
+_FREE_WORK_RE = re.compile(
+    r"\bfree\s+(?:sample|mock-?up|demo|design|draft|concept|preview|test|trial|work)\b"
+    r"|\bfor\s+free\b|\bfree\s+of\s+charge\b|\bat\s+no\s+(?:extra\s+)?(?:cost|charge)\b"
+    r"|\bwithout\s+(?:any\s+)?charge\b|\bgratis\b|\bgratuit(?:e|ement)?\b|\bsin\s+costo\b"
+    r"|\bsans\s+frais\b", re.IGNORECASE)
+# A preview is an option to offer, not something to start unasked.
+_PREVIEW_PROMISE_RE = re.compile(
+    r"\bi(?:'ll|’ll|\s+will)\s+(?:first\s+show|show\s+you\s+first)\b|\bi(?:'ll|’ll|\s+will)\s+first\s+(?:send|share|prepare)\b"
+    r"|\blo\s+primero\s+que\s+te\s+mostrar|\bprimero\s+te\s+mostrar|\bje\s+vous\s+montrerai\s+d'abord\b",
+    re.IGNORECASE)
+_DURATION_RE = re.compile(
+    r"\b(\d{1,3})(?:\s*(?:-|–|to|a|à)\s*(\d{1,3}))?\s*(?:business\s+|working\s+|calendar\s+)?"
+    r"(days?|weeks?|months?|d[ií]as|semanas?|meses|jours|semaines?|mois)\b", re.IGNORECASE)
+_JOINED_QUESTION_RE = re.compile(
+    r",\s*(?:and|y|et)\s+(?:will|do|does|did|is|are|should|can|could|would|have|has|"
+    r"tienes|tiene|necesitas|necesita|puedes|puede|avez|pouvez|faut)\b", re.IGNORECASE)
+_LIST_JOIN_RE = re.compile(r"\s(?:and|y|e|et|or|o|ou)\s", re.IGNORECASE)
+_NON_NUMERIC_COMMA_RE = re.compile(r"(?<!\d),|,(?!\d)")
+# The close must invite a reply — per language, the LLM review covers the others.
+_INVITE_RES = {
+    "es": re.compile(r"\b(?:habl|convers|charl|escr[ií]b|cu[ée]nt|coment|platic|respond|"
+                     r"env[ií]|compart|mostr|revis|chat)\w*|[?¿]", re.IGNORECASE),
+    "fr": re.compile(r"\b(?:discut|échang|parl|écriv|dites|répond|envoy|partag|montr|"
+                     r"regard|chat|message)\w*|\?", re.IGNORECASE),
+}
 _MIN_WORDS_TO_SPLIT = 90
 _FORMULA_REPEATS = 2             # earlier proposals that may share a draft's first or last words
 
@@ -590,6 +652,62 @@ def _claim_problems(text: str, rules: ProposalRules) -> list:
     return problems
 
 
+def _shingles(text: str, k: int = 5) -> set:
+    words = [w.lower() for w in _WORD_RE.findall(text or "")]
+    return {" ".join(words[i:i + k]) for i in range(max(0, len(words) - k + 1))}
+
+
+def is_deliverable_dump(sentence: str) -> bool:
+    """
+    A sentence that recites a checklist ("I'll review the spreadsheet and your template,
+    transfer and organize each record, verify numbers, dates, amounts and details, and
+    flag…"). Counted by list joints — commas that aren't inside numbers, plus and/or.
+
+    Calibrated on the 2026-11-04 corpus: three or four items in a sentence are ordinary
+    writing (they appeared in most of the strongest competitor bids), so only an extreme
+    enumeration counts — it caught 11 of our 41 bids and none of the hand-picked
+    exemplars except one that pasted a bulleted list.
+    """
+    commas = len(_NON_NUMERIC_COMMA_RE.findall(sentence))
+    joints = commas + len(_LIST_JOIN_RE.findall(sentence))
+    return commas >= 4 and joints >= 8
+
+
+_ALTERNATIVE_RE = re.compile(r"\s(?:or|o|ou)\s", re.IGNORECASE)
+_ADDITIVE_RE = re.compile(r"\s(?:and|y|e|et)\s", re.IGNORECASE)
+
+
+def is_compound_question(sentence: str) -> bool:
+    """
+    Two questions glued together, or one asking about several different things.
+    "A, B, or C?" is one choice and is fine — the kind of question clients answer.
+    """
+    if not sentence.rstrip().endswith("?"):
+        return False
+    if _JOINED_QUESTION_RE.search(sentence):
+        return True
+    return (len(_NON_NUMERIC_COMMA_RE.findall(sentence)) >= 2
+            and bool(_ADDITIVE_RE.search(sentence)) and not _ALTERNATIVE_RE.search(sentence))
+
+
+def _inside_profile_phrase(text: str, match, profile_text: str) -> bool:
+    """True when *match* is part of a name the profile itself uses — a portfolio item
+    called "NewTrition Free Sample Landing Page" is not a promise of free work."""
+    profile = _shingles(profile_text or "", 3)
+    if not profile:
+        return False
+    window = text[max(0, match.start() - 40): match.end() + 40]
+    first = _WORD_RE.findall(match.group(0).lower())[:1]
+    return any(gram in profile for gram in _shingles(window, 3)
+               if first and first[0] in gram.split())
+
+
+def brief_overlap(text: str, brief: str) -> float:
+    """Share of the proposal's five-word runs copied from the brief."""
+    mine = _shingles(text)
+    return len(mine & _shingles(brief)) / len(mine) if mine else 0.0
+
+
 def validate_proposal(text: str, rules: ProposalRules) -> dict:
     """
     Deterministic gate a proposal must pass before it can be approved or
@@ -660,9 +778,45 @@ def validate_proposal(text: str, rules: ProposalRules) -> dict:
         for days in rules.forbidden_days:
             if re.search(rf"\b{re.escape(str(days))}\s*(?:working\s+|business\s+)?days?\b", lowered):
                 problems.append("States the delivery time — the bid form already shows it.")
-        if rules.language.lower().startswith("en"):
-            ending = " ".join(_SENTENCE_RE.split(text)[-2:])
-            if not _INVITE_RE.search(ending):
+        # Any other duration ("5-7 días por lote", "two weeks") — unless the client wrote it.
+        brief_digits = _digits_for_words(rules.brief_text or "").lower()
+        for match in _DURATION_RE.finditer(_digits_for_words(text)):
+            if match.group(0).lower() not in brief_digits:
+                problems.append(f"States a duration (“{match.group(0)}”) — the bid shows the "
+                                f"delivery time; describe what they'd see first instead.")
+                break
+        sentences = [x for x in _SENTENCE_RE.split(text) if x.strip()]
+        resume = _RESUME_LINE_RE.search(text)
+        if resume:
+            problems.append(f"Résumé line (“{resume.group(0)}…”) — prove it with one fact that "
+                            f"fits this job, or leave it out.")
+        if len(_CONTRAST_RE.findall(text)) > 1:
+            problems.append("Leans on “rather than / not just” more than once — it reads as a "
+                            "formula.")
+        free = next((m for m in _FREE_WORK_RE.finditer(text)
+                     if not _inside_profile_phrase(text, m, rules.profile_text)), None)
+        if free:
+            problems.append(f"Promises free work (“{free.group(0)}”) — offer a preview as an "
+                            f"option, never as free work.")
+        promise = _PREVIEW_PROMISE_RE.search(text)
+        if promise:
+            problems.append(f"Commits to unrequested work (“{promise.group(0)}…”) — offer it as "
+                            f"an option the client can take up.")
+        dump = next((x for x in sentences if is_deliverable_dump(x)), None)
+        if dump:
+            problems.append(f"Lists the deliverables back (“{dump[:60]}…”) — keep the two or "
+                            f"three steps that matter and say why.")
+        compound = next((x for x in sentences if is_compound_question(x)), None)
+        if compound:
+            problems.append(f"Asks several things in one question (“{compound[:60]}…”) — one "
+                            f"subject per question.")
+        if rules.brief_text and brief_overlap(text, rules.brief_text) > 0.25:
+            problems.append("Copies the brief's wording back — say what you'd do about it instead.")
+        language = (rules.language or "en").lower()[:2]
+        invite = _INVITE_RE if language == "en" else _INVITE_RES.get(language)
+        if invite is not None:
+            ending = " ".join(sentences[-2:])
+            if not invite.search(ending):
                 problems.append("Doesn't end with an invitation to talk.")
 
     return {
@@ -713,7 +867,56 @@ def repetition_problems(text: str, recent: list) -> list:
                         f"(“{' '.join(ending)}…”).")
     elif any(_overlap(closing, _word_set(o[-1])) >= 0.7 for o in others):
         problems.append("The closing is nearly identical to a recent proposal.")
+    # A recycled middle sentence is the same habit: "My background includes React,
+    # Next.js and APIs, with a 4.8/5 rating across 21 client reviews" sat in a quarter
+    # of all bids, wherever the opening and closing varied.
+    earlier = [[_word_set(x) for x in o if len(_WORD_RE.findall(x)) >= 8] for o in others]
+    for sentence in sentences[1:-1]:
+        if len(_WORD_RE.findall(sentence)) < 8:
+            continue
+        words = _word_set(sentence)
+        hits = sum(1 for o in earlier if any(_overlap(words, x) >= 0.6 for x in o))
+        if hits >= _FORMULA_REPEATS:
+            problems.append(f"Reuses a sentence from {hits} recent proposals "
+                            f"(“{sentence[:50]}…”).")
+            break
     return problems
+
+
+# Function words that make a repeated word run meaningless on its own.
+_PHRASE_STOP = set("""
+a an the and or but of to in on at for with by from as is are be been was were it its this that
+these those i i'd i'll i'm i've me my we our you your yours they their them he she his her
+can will would could should do does did have has had not no so if then than there here what
+which who how when where why all any some more most also just very too into over about up out
+de la el los las un una y o en para con por que se su sus tu te le les des du et ou pour avec
+""".split())
+
+
+def overused_phrases(recent: list, n: int = 4, min_count: int = 3, limit: int = 8) -> list:
+    """
+    Four-word runs this account keeps reusing across its recent bids, most frequent
+    first — given to the writer as "don't use these". The habit changes as the writer
+    avoids the last one, so the list is computed from the bids actually sent, not kept
+    by hand.
+    """
+    counts: Counter = Counter()
+    for text in recent or []:
+        words = [w.lower().replace("’", "'") for w in _WORD_RE.findall(text or "")]
+        counts.update({" ".join(words[i:i + n]) for i in range(len(words) - n + 1)})
+    out: list = []
+    for gram, count in counts.most_common():
+        if count < min_count:
+            break
+        if sum(token not in _PHRASE_STOP for token in gram.split()) < 2:
+            continue
+        if any(gram in kept or kept in gram or len(set(gram.split()) & set(kept.split())) >= 3
+               for kept in out):
+            continue
+        out.append(gram)
+        if len(out) >= limit:
+            break
+    return out
 
 
 def clean_model_text(text: str) -> str:

@@ -59,6 +59,7 @@ from bot.proposal_engine import (
     compute_opportunity_score,
     count_words,
     estimate_duration,
+    overused_phrases,
     recommend_bid,
     repetition_problems,
     split_into_paragraphs,
@@ -66,8 +67,13 @@ from bot.proposal_engine import (
 )
 
 # Description cap fed to the LLM (head + tail — requirements often sit at both ends).
-_DESC_HEAD = 6_000
-_DESC_TAIL = 1_500
+# Freelancer briefs rarely pass ~5,000 characters; these limits only ever bite on an
+# outlier, so a normal brief reaches every stage complete.
+_DESC_HEAD = 12_000
+_DESC_TAIL = 3_000
+_WRITER_DESC_CHARS = 6_000
+_REVIEW_DESC_CHARS = 4_000
+_FITS = ("strong", "partial", "none")
 
 _REVIEW_PASS_SCORE = 70          # LLM critic score required to pass review (the review
                                  # prompt calibrates a typical bid at 40-60)
@@ -75,7 +81,7 @@ _RECENT_PROPOSALS = 25           # how far back repetition is checked
 _MIN_SAMPLE_BUDGET_USD = 100     # below this, offering free work makes no sense
 _MIN_SKILL_FIT = 3.0             # below this the analysis itself says it's not their line of work
 
-ANALYSIS_VERSION = 3
+ANALYSIS_VERSION = 4
 
 
 # ── System prompts ─────────────────────────────────────────────────────────────
@@ -110,8 +116,17 @@ Return ONLY valid JSON with EXACTLY these keys (use "" / [] / null when unknown)
   "recommendation_reason": "One sentence explaining the recommendation",
   "approach": ["2-4 concrete steps you would really take on THIS project, in order"],
   "proposal_angle": "One sentence of real insight about THIS client's problem: what the work hinges on, a pitfall in their setup, or a smart place to start. About their project, never about how to position the freelancer",
+  "confirmed_requirements": ["What the client explicitly stated they need — keep their numbers, names and formats"],
+  "assumptions": ["Reasonable assumptions you make where the brief is silent, each starting 'Assuming'"],
+  "constraints": ["Hard constraints and dependencies: platform, hardware, formats, access, deadlines, existing systems"],
+  "implementation_considerations": [{"point": "A non-obvious consideration specific to THIS brief that a competent practitioner would raise", "why": "Why it matters to this client"}],
+  "solution_options": [{"option": "A practical way to do it", "tradeoff": "When it fits / what it costs", "recommended": true}],
+  "first_milestone": "A small, early piece of the PAID work the client could see and approve before the rest, or ''",
+  "expected_outcome": "What the client will practically have at the end, in their terms",
+  "decision_questions": ["0-2 questions, ONE thing each, ideally 'A or B?', whose answer changes scope, approach or price"],
+  "client_style": {"formality": "formal | neutral | casual", "technical_level": "non_technical | some | technical", "address": "how the brief addresses the reader: tú, usted, tu, vous, you…"},
   "sample_offer": {"appropriate": false, "idea": ""},
-  "portfolio_match": {"title": ""},
+  "portfolio_match": {"title": "", "fit": "strong | partial | none", "why": ""},
   "questions": ["0-2 questions whose answers materially change scope/price/architecture"],
   "skill_fit": 7.5,
   "clarity": 6.0,
@@ -124,14 +139,35 @@ Rules:
 - work_components hours must be realistic engineering estimates covering review,
   implementation, testing, deployment and documentation where relevant.
 - skill_fit / clarity / feasibility / proposal_edge are 0-10 numbers.
-- portfolio_match: the exact title of one of the profile's listed portfolio items,
-  only if it is genuinely the same kind of work; otherwise null. Never fabricate one.
-- sample_offer: appropriate=true only when a small, quick sample (roughly an hour's
-  work) would really show understanding — one key screen wireframed, a short script
-  run on a few records, one style direction. "idea" names exactly that small thing,
-  without saying how long it takes.
-  appropriate=false when the sample would BE the job (one banner, a tiny fix), when
-  it needs access or files you don't have, or when the client rules out spec work.
+- portfolio_match: the exact title of one of the profile's listed portfolio items and
+  how well it fits. fit="strong" ONLY when it is the same kind of deliverable (a logo
+  for a logo job, a WooCommerce store for a WooCommerce store, an Android app for an
+  Android app). Sharing a tool or a broad field (Photoshop, "graphic design", "web") is
+  "partial": a food-brand graphic does not prove windshield-reflection retouching, and a
+  trade-show booth does not prove an industrial logo. Nothing at least partial → title
+  "" and fit "none". Never fabricate one.
+- implementation_considerations: 1-3 points a skilled practitioner would raise about
+  THIS brief that the client did not spell out — a likely root cause, a platform
+  limitation, an edge case, a production constraint (e.g. "Canvas strips custom CSS, so
+  the page must use inline styles"; "fast flipper swings can tunnel through the ball
+  without sub-stepped physics"). Never generic advice ("testing is important", "good
+  communication"). Say "likely" when it's a diagnosis you can't confirm from the brief.
+- confirmed_requirements vs assumptions: never present an assumption as something the
+  client said.
+- first_milestone: part of the paid job, small and early (the homepage layout, the first
+  20 records, the master label for one fragrance) — something that lets the client judge
+  the direction before the rest is built.
+- decision_questions: only questions whose answer changes how the work is done or what it
+  costs, one subject per question, preferably two concrete options ("one shared room or
+  private conversations?"). Never ask what the brief already answers.
+- client_style: read it from how the brief is written (formality, vocabulary, how it
+  addresses bidders) — the proposal will mirror it.
+- sample_offer: a small PRELIMINARY concept the freelancer could offer to help the client
+  judge the direction (roughly an hour's work): one key screen wireframed, a short script
+  run on a few records, one style direction, the logo mark in two constructions. "idea"
+  names exactly that small thing, without saying how long it takes.
+  appropriate=false when the sample would BE the job (one banner, a tiny fix), when it
+  needs access or files you don't have, or when the client rules out spec work.
 - questions: only include a question if the answer materially affects
   architecture, technology choice, scope, security, integrations, price,
   delivery time, or required access. Otherwise return [].
@@ -160,81 +196,92 @@ Rules:
 """
 
 _PROPOSAL_SYSTEM = """\
-You write one bid for a real freelancer on Freelancer.com. Its only job is to make
-THIS client reply. A client skims dozens of near-identical bids and often sees just
-the first line or two before deciding whether to open one, so the first sentence has
-to show, in the client's own terms, that you really read this brief.
+You write one bid for a real freelancer on Freelancer.com. Its only job is to make THIS
+client want to reply. Clients skim dozens of bids and decide from the first line or two —
+the part Freelancer shows as a preview — so those lines must prove you understood this
+brief AND have a professional view on it.
 
-Write the way an experienced freelancer writes after carefully reading a project they
-actually want, the way you'd talk to the client on a call: plain, specific, warm and
-confident, in the first person singular. A message from a person, not a pitch.
+What separates the bids clients answer from the rest (from a study of 1,230 real bids):
+- They open with judgment, not a greeting or a self-introduction: what the work hinges on,
+  the likely cause of the problem, a constraint the client may not have spotted, or the
+  decision that shapes the build.
+- They add something the brief didn't say. Repeating the requirements — or listing the
+  client's deliverables back in the first person — is a paraphrase, however specific.
+- They explain the approach in two or three concrete steps at the client's technical level,
+  and say what the client will see first.
+- They lower the client's risk and effort: a first piece to approve before the rest, what
+  the client keeps, what the client won't have to do.
+- They prove credibility with ONE fact that truly fits, or not at all.
+- They end with something easy to answer: one decision question or one concrete next step.
 
-WHAT THE BID SHOULD DO — a guide, not a template. Adapt the order and depth to the
-project and never label the parts:
-- Show understanding. Start from something specific in their brief and add what it
-  doesn't say outright: what it hinges on, or what you'd watch out for. Do not recite
-  their requirements back. Compare (illustrations only — never reuse their wording):
-    Weak: "You need a modern, minimal business card that stays readable."
-    Strong: "Laser-cutting changes what minimal can mean here: a phone number that
-    prints fine at 6pt will burn out, so I'd size the contact details for the cut first."
-    Weak: "React, Node and AI need to work together as one application."
-    Strong: "With the LLM calls living inside the same Node API as everything else, the
-    first thing I'd pin down is what happens to the UI when one of them takes 20 seconds."
-- Do what they asked. If the client asks bidders to answer questions or describe their
-  approach, do it: it's the first thing they check. If they ask for a word or phrase to
-  prove you read the brief, make it the very first thing in the bid, standing on its own
-  before your opening sentence, never dropped mid-paragraph. If they ask for a timeline,
-  point to the delivery time shown with this bid and say what they'd see first. If they
-  want links or samples you can't show in a bid, point to the portfolio on your Freelancer
-  profile or offer to share them in chat.
-- Explain your approach. How you'd actually solve this, in a few concrete steps, at the
-  technical depth the client wrote in: what you'd do first and what they'd see early.
-- Give credibility, from the VERIFIED PROFILE only. One relevant proof point: a portfolio
-  item by name and what it has in common with this job, what a past client said about
-  similar work, or your track record. If nothing truly fits, skip it, or invite them to
-  look through your reviews and portfolio on your Freelancer profile. Never stretch an
-  unrelated item to fit, and don't describe the profile itself ("among my listed skills").
-- Show real interest without gushing. Say what draws you to this work only if you can be
-  specific about it. Serious and committed beats enthusiastic.
-- Open the conversation. End with a friendly, specific invitation to reply: about a
-  particular decision, the next step, or the small sample if one is offered below. Make it
-  easy to say yes to, and word it the way you'd end a message to this one client, never as
-  a stock sign-off. They're already on Freelancer, so you needn't name the site.
+Write like an experienced independent professional talking to this one client: plain,
+specific, confident without arrogance, warm without gushing, first person singular.
+
+HOW TO BUILD IT — a guide, not a template. Vary the order and shape from bid to bid and
+never label the parts:
+- Opening (the first two sentences): follow the OPENING MOVE in the instructions. Use a
+  detail only this brief contains and add your judgment about it.
+- Understanding: what they are really trying to achieve, plus one or two of the
+  implementation considerations you're given, each with why it matters to them. Phrase a
+  diagnosis you can't confirm as likely, not certain.
+- Approach: two or three concrete steps — what you'd do first and why, what they'd see
+  early. Never cram more than three deliverables into one sentence; the client wrote the
+  list, they don't need it back.
+- Outcome: what they will practically have at the end.
+- Credibility: from the VERIFIED PROFILE only, and only what the instructions say fits. One
+  sentence, tied to this job. No résumé lines ("My background includes…", "I have skills
+  in…"), no ratings recited as a formula.
+- Invitation: follow the CLOSING MOVE. Specific to this project, easy to say yes to.
+- If the client asks bidders to do something (answer a question, start with a word, describe
+  an approach, mention a timeline), do it — that is the first thing they check. A requested
+  code word goes first, alone, before your opening. For a timeline, point to the delivery time
+  shown with the bid and say what they'd see first.
+
+QUESTIONS: zero to two, and only when the answer changes scope, approach or price. One
+subject per question (never "X, Y and Z?"); prefer two concrete options ("one shared room,
+or private conversations?"). Never ask what the brief already answers.
+
+PREVIEW: only if the instructions say you may. Offer it as an option that helps them judge
+the direction — e.g. "If it would help you decide, I can sketch the header in your palette
+before we settle the rest." Small and conditional. Never call it free, never say it already
+exists, never promise a finished sample or start it unasked ("I'll first show you…").
 
 HARD RULES — any violation makes the bid unusable:
-- Every statement about your past must come from the VERIFIED PROFILE. Never invent or
-  round up clients, years, project counts, results, percentages, certifications, degrees,
+- Every statement about your past must come from the VERIFIED PROFILE. Never invent or round
+  up clients, years, project counts, results, percentages, certifications, degrees,
   industries or a team, and don't say how recent past work is unless the profile dates it.
-  What you WILL do on this project is fine: for a tool the profile doesn't list, describe
-  the plan ("I'd build it in Elementor") without claiming you've used it before.
-- "Verified" is a label for you, not the client: never write "my verified experience" or
-  anything like it.
-- Don't state your availability, weekly hours, response times or language level unless
-  the profile does. If the client asks, offer to settle it in chat.
+  What you WILL do on this project is fine: for a tool the profile doesn't list, describe the
+  plan ("I'd build it in Elementor") without claiming you've used it before.
+- "Verified" is a label for you, not the client: never write "my verified experience".
+- Don't state your availability, weekly hours, response times or language level unless the
+  profile does. If the client asks, offer to settle it in chat.
 - No guarantees or promised outcomes ("guaranteed", "100%", "will rank first").
-- Never state the bid amount or the total delivery time: the client sees both next to
-  the bid. An early milestone ("a first draft early on") is fine.
+- Never state the bid amount or a delivery duration ("5-7 days per batch", "two weeks"): the
+  client sees both next to the bid. An early milestone ("the homepage layout first") is fine.
 - No links, and no contact details or other channels (email, phone, WhatsApp, Telegram,
   Skype). The conversation happens in Freelancer's chat.
-- Don't volunteer weaknesses or apologize for missing skills. Only two things rule out a
-  bid: they'd have to already own what the client is buying, or the core of the work is
-  another profession. Then don't write a bid that says so: leave "proposal" empty and give
-  the reason in "no_bid_reason". A client demanding links, samples or experience with a
-  specific tool that you can't show is NOT such a case: write your best honest bid, and
-  offer what you can in chat.
-- Only offer a sample if the instructions below say you may, exactly as small as
-  described. Never promise free complete work.
-- Write in the language requested (the client's language).
-- Plain text, two or three short paragraphs. No markdown, bullets, headings or emoji.
-  Vary sentence length; contractions are fine; at most one exclamation mark.
+- Don't volunteer weaknesses or apologize for missing skills. Only two things rule out a bid:
+  they'd have to already own what the client is buying, or the core of the work is another
+  profession. Then don't write a bid that says so: leave "proposal" empty and give the reason
+  in "no_bid_reason". A client demanding links, samples or experience with a specific tool
+  you can't show is NOT such a case: write your best honest bid and offer what you can in chat.
+- Never mention AI, prompts or that the text was generated.
+
+STYLE:
+- Write in the client's language and register: mirror how the brief addresses people (tú or
+  usted, tu or vous, formal or casual). Never mix languages.
+- Plain text in two to four short paragraphs. No markdown, bullets, headings, emoji,
+  greeting line, name or sign-off. Vary sentence length; contractions are fine; at most one
+  exclamation mark. Don't add mistakes on purpose — sound human through specifics.
 - Never open with a greeting, your name or title, praise, "I read/reviewed/saw…", "As a…",
-  "With over…", "For [restating the project]…", "The key/main/tricky/real/biggest…" or
-  "What stands out…".
+  "With over…", "For [restating the project]…", "I'd start/I would start/First…", "The
+  key/main/tricky/real/biggest…" or "What stands out…".
+- Use a "not X, but Y" / "rather than" contrast at most once.
 - Avoid stock phrases and corporate talk: leverage, seamless, robust, cutting-edge,
-  top-notch, tailored solution, elevate, unlock, delve, game-changer, hit the ground
-  running, I'm excited, I'm passionate, perfect fit, feel free, don't hesitate, looking
-  forward, my approach would be, I bring, I can contribute, proven track record, extensive
-  experience, clearly defined, ensure, message me here, walk you through.
+  top-notch, tailored solution, elevate, unlock, delve, game-changer, hit the ground running,
+  I'm excited, I'm passionate, perfect fit, feel free, don't hesitate, looking forward, my
+  approach would be, I bring, I can contribute, proven track record, extensive experience,
+  clearly defined, ensure, message me here, walk you through, choose me, hire me, if you reply.
 
 Return ONLY valid JSON:
 {
@@ -251,16 +298,18 @@ the freelancer's verified profile. The question is: would this make the client r
 
 Be a tough judge. A typical bid deserves 40-60. 75 means a busy client would probably
 start a conversation. 90+ is rare. Score 0-100, weighing:
-- understanding (30): the opening could only have been written for this project and shows
-  thought beyond the brief; it doesn't echo the requirements back, and it does what the
-  client asked bidders to do
-- approach (25): a practical, credible plan for this actual problem, at the client's level,
-  not generic process talk
-- credibility (15): any proof is verified and truly relevant, not stretched
-- voice (15): natural and human; no AI filler, corporate talk, sales language or forced
-  enthusiasm
-- engagement (15): gives a real reason to answer and ends with a clear, friendly
-  invitation to talk
+- understanding (30): the first two sentences could only have been written for this
+  project and add judgment the brief didn't contain (a likely cause, a constraint, a
+  decision); it doesn't recite the requirements or list the deliverables back; it does what
+  the client asked bidders to do
+- approach (25): a practical, credible plan for this actual problem, at the client's
+  technical level, with a sensible first step — not generic process talk
+- credibility (15): any proof is verified and truly the same kind of work, not stretched; no
+  résumé boilerplate
+- voice (15): natural, human and in the client's language and register; no AI filler,
+  corporate talk, sales language, forced enthusiasm or template rhythm
+- engagement (15): gives a real reason to answer and ends with a specific, easy next step or
+  decision question; any preview is offered as an option, not as free work
 
 Then check statements of FACT about the freelancer's past against the VERIFIED PROFILE and
 list each one it doesn't support in "unsupported_claims": years, clients, past projects,
@@ -270,9 +319,10 @@ listed skill, ordinary professional conduct ("I'll keep you updated"), or questi
 wording may differ; invented facts may not.
 
 Mark "revise" if it could be pasted onto an unrelated project, misunderstands the request,
-ignores what the client asked bidders to do, states the bid amount or delivery time,
-volunteers weaknesses, promises an outcome, or offers unrealistic free work. A request for
-a timeline counts as answered when the bid points to the delivery time shown with it.
+ignores what the client asked bidders to do, recites the brief, states the bid amount or a
+delivery duration, volunteers weaknesses, promises an outcome, promises free or unrequested
+work, asks more than two questions, or uses a stock sign-off. A request for a timeline counts
+as answered when the bid points to the delivery time shown with it.
 
 Set "declines" to true when the bid tells the client the freelancer can't do the core of
 the job, doesn't have what they want, or should hire someone else.
@@ -289,24 +339,34 @@ Return ONLY valid JSON:
 """
 
 # A different first move per project, because a fixed one is how every bid ended up
-# opening "The key…". Chosen deterministically so a retry advances instead of repeating.
+# opening "The key…" (48 of 85) and then "I'd start by…" (19 of 41). Chosen
+# deterministically so a retry advances instead of repeating.
 _OPENING_MOVES = (
-    "Open on the outcome this client wants and name the specific thing it depends on.",
-    "Open on a concrete detail from the brief and what it means for how you'd do the work.",
-    "Open on the first thing you would do on this project and why that comes first.",
-    "Open on a specific risk or pitfall in this client's situation and how you'd avoid it.",
-    "Open on something the brief implies but doesn't spell out, showing you read between the lines.",
+    "Diagnosis — open with what this most likely comes down to (the cause of their problem, "
+    "or what the work hinges on), in their terms, and why.",
+    "Constraint — open with a concrete detail or constraint from the brief and what it "
+    "changes about how the work should be done.",
+    "Decision — open with the one decision that shapes this work and the option you'd "
+    "recommend, with the reason.",
+    "Risk — open with a specific pitfall in this client's situation and how you'd keep it "
+    "from happening.",
+    "Outcome — open with the result they want, stated concretely, and the one thing that "
+    "result depends on.",
 )
-# Likewise the close, because "Message me here on Freelancer and I'll walk you through…"
-# ended 12 of the first 18 bids.
+# Likewise the close: "Message me here on Freelancer and I'll walk you through…" ended 12 of
+# the first 18 bids, and then "If you reply, I'll first…" / "Share X in chat and I'll…"
+# ended 15 of 41.
 _CLOSING_MOVES = (
-    "End on the one decision you'd most like their view on, and ask them to reply with it.",
-    "End by suggesting a short chat to settle the next step, naming that step.",
-    "End by asking for the one file or detail you need to start, and saying what you'd do with it.",
-    "End by saying what you'd show them first if they reply.",
-    "End by offering to look at something of theirs in chat (the file, the current site, an "
-    "example they like) and tell them what you see.",
-    "End by telling them the first thing you'd do once they reply, and what you'd need for it.",
+    "End with one decision question — two concrete options — whose answer changes how "
+    "you'd do the work.",
+    "End by naming the first piece they would see and approve, and invite a reply to get "
+    "that started.",
+    "End by asking for the one file or detail you'd need first, and what you'd check in it.",
+    "End by suggesting a short chat about one specific choice, naming the choice.",
+    "End by offering to look at something of theirs in chat (the current site, a sample "
+    "file, a reference they like) and saying what you'd look for.",
+    "End with the preview offer if the instructions allow one (as an option); otherwise "
+    "with the single most useful scope question.",
 )
 
 
@@ -501,9 +561,48 @@ class ProjectAnalyzer:
 
         pm = data.get("portfolio_match")
         match = self._find_portfolio_item(_as_str(pm.get("title"))) if isinstance(pm, dict) else None
-        out["portfolio_match"] = {
-            "title": match["title"], "description": match.get("description") or "",
-        } if match else None
+        fit = _as_str(pm.get("fit")).lower() if isinstance(pm, dict) else ""
+        # An analysis written before fits were graded only named an item when it judged it
+        # "genuinely the same kind of work" — the old rule — so it keeps that meaning.
+        fit = fit if fit in _FITS else "strong"
+        if match and fit != "none":
+            out["portfolio_match"] = {
+                "title": match["title"], "description": match.get("description") or "",
+                "fit": fit, "why": _as_str(pm.get("why"))[:200],
+            }
+        else:
+            out["portfolio_match"] = None
+
+        # ── v4: what the writer needs to show judgment, not a paraphrase ─────────
+        for key in ("confirmed_requirements", "assumptions", "constraints",
+                    "decision_questions"):
+            out[key] = _as_str_list(data.get(key))[:8]
+        out["decision_questions"] = out["decision_questions"][:2]
+        considerations = []
+        for item in data.get("implementation_considerations") or []:
+            if isinstance(item, dict) and _as_str(item.get("point")):
+                considerations.append({"point": _as_str(item.get("point"))[:300],
+                                       "why": _as_str(item.get("why"))[:300]})
+            elif isinstance(item, str) and item.strip():
+                considerations.append({"point": item.strip()[:300], "why": ""})
+        out["implementation_considerations"] = considerations[:3]
+        options = []
+        for item in data.get("solution_options") or []:
+            if isinstance(item, dict) and _as_str(item.get("option")):
+                options.append({"option": _as_str(item.get("option"))[:200],
+                                "tradeoff": _as_str(item.get("tradeoff"))[:200],
+                                "recommended": item.get("recommended") is True})
+        out["solution_options"] = options[:3]
+        out["first_milestone"] = _as_str(data.get("first_milestone"))[:200]
+        out["expected_outcome"] = _as_str(data.get("expected_outcome"))[:300]
+        style = data.get("client_style") if isinstance(data.get("client_style"), dict) else {}
+        formality = _as_str(style.get("formality"), "neutral").lower()
+        level = _as_str(style.get("technical_level"), "some").lower()
+        out["client_style"] = {
+            "formality": formality if formality in ("formal", "neutral", "casual") else "neutral",
+            "technical_level": level if level in ("non_technical", "some", "technical") else "some",
+            "address": _as_str(style.get("address"))[:20],
+        }
 
         for key in ("skill_fit", "clarity", "feasibility", "proposal_edge"):
             try:
@@ -520,7 +619,7 @@ class ProjectAnalyzer:
                 project_id=project.id)
         raw = self.client.chat(
             _ANALYSIS_SYSTEM, context,
-            max_tokens=3000, temperature=0.4, json_object=True,
+            max_tokens=4500, temperature=0.4, json_object=True,
             operation="project_analysis", project_id=project.id,
         )
         data = _safe_json_loads(raw)
@@ -532,7 +631,7 @@ class ProjectAnalyzer:
                     project_id=project.id)
             raw = self.client.chat(
                 _ANALYSIS_SYSTEM, context,
-                max_tokens=3000, temperature=0.1, json_object=True,
+                max_tokens=4500, temperature=0.1, json_object=True,
                 operation="project_analysis", project_id=project.id,
             )
             data = _safe_json_loads(raw)
@@ -567,7 +666,7 @@ class ProjectAnalyzer:
             payment_verified=project.client_payment_verified,
             deposit_made=project.client_deposit_made,
             age_hours=age_hours,
-            has_portfolio_match=analysis["portfolio_match"] is not None,
+            has_portfolio_match=(analysis["portfolio_match"] or {}).get("fit") == "strong",
         ))
 
     def _price(self, project: Project, analysis: dict, attachments: dict) -> dict:
@@ -622,6 +721,31 @@ class ProjectAnalyzer:
         )
         return [r[0] for r in rows if r[0]]
 
+    @staticmethod
+    def _length_hint(analysis: dict, max_words: int) -> str:
+        """Shorter for a small task, more room for a complex build — never one fixed size."""
+        low, high = {"low": (80, 130), "medium": (100, 160), "high": (120, 180)}.get(
+            analysis.get("complexity") or "medium", (100, 160))
+        high = min(high, max_words)
+        low = min(low, high - 20)
+        return (f"  - Length: about {low}–{high} words — as short as the project allows; "
+                f"never exceed {max_words}.")
+
+    def _proof_instruction(self, analysis: dict, picks: dict) -> str:
+        pm = analysis.get("portfolio_match")
+        if pm and pm.get("fit") == "strong":
+            return (f"  - Proof: the portfolio item \"{pm['title']}\" is the same kind of work"
+                    + (f" ({pm['why']})" if pm.get("why") else "")
+                    + ". Name it and say in a few words what it has in common with this job.")
+        if pm and pm.get("fit") == "partial":
+            return (f"  - Proof: \"{pm['title']}\" is only loosely related — don't present it as "
+                    "similar work. At most mention your portfolio or reviews in passing, or "
+                    "let the approach carry the credibility.")
+        if self.profile.get("source") == "freelancer" and not picks["portfolio"]:
+            return ("  - Proof: no portfolio item fits closely — don't cite one. If it reads "
+                    "naturally, invite them to look through your reviews on your profile.")
+        return "  - Proof: only if something in the verified profile genuinely fits this job."
+
     def _proposal_user_message(
         self, project: Project, analysis: dict, pricing: dict, duration: dict,
         feedback: str = "", attempt: int = 0, recent: Optional[list] = None,
@@ -630,7 +754,14 @@ class ProjectAnalyzer:
         closing = _CLOSING_MOVES[(project.id + attempt) % len(_CLOSING_MOVES)]
         sample = self._offer_sample(project, analysis)
         picks = relevant_items(self.profile, project.title or "", project.skills or "")
-        pm = analysis.get("portfolio_match")
+        style = analysis.get("client_style") or {}
+        considerations = [
+            c["point"] + (f" — matters because {c['why']}" if c.get("why") else "")
+            for c in analysis.get("implementation_considerations") or []]
+        options = [o["option"] + (f" ({o['tradeoff']})" if o.get("tradeoff") else "")
+                   + (" ← recommended" if o.get("recommended") else "")
+                   for o in analysis.get("solution_options") or []]
+        questions = analysis.get("decision_questions") or analysis.get("questions") or []
 
         parts = [
             "PROJECT:",
@@ -639,43 +770,48 @@ class ProjectAnalyzer:
             f"  The problem behind it: {analysis.get('client_problem') or '(see description)'}",
             f"  Details only this brief contains: {'; '.join(analysis.get('specific_details') or []) or '—'}",
             f"  What the client asks bidders to do: {'; '.join(analysis.get('client_asks') or []) or 'nothing specific'}",
-            f"  Deliverables: {', '.join(analysis['deliverables']) or '—'}",
-            f"  Key requirements: {', '.join(analysis['technical_requirements'][:6]) or '—'}",
+            f"  Confirmed requirements: {'; '.join(analysis.get('confirmed_requirements') or analysis['deliverables']) or '—'}",
+            f"  Assumptions (never state these as the client's words; you may say 'I'm assuming…'): "
+            f"{'; '.join(analysis.get('assumptions') or []) or '—'}",
+            f"  Constraints: {'; '.join(analysis.get('constraints') or []) or '—'}",
             f"  Technologies mentioned: {', '.join(analysis['technologies']) or '—'}",
+            f"  Implementation considerations (use one or two, in your own words): "
+            f"{' | '.join(considerations) or '—'}",
+            f"  Practical options: {' | '.join(options) or '—'}",
             f"  How you would approach it: {' → '.join(analysis.get('approach') or []) or '—'}",
+            f"  First piece they could see and approve: {analysis.get('first_milestone') or '—'}",
+            f"  Outcome they get: {analysis.get('expected_outcome') or '—'}",
             f"  Strongest angle: {analysis['proposal_angle'] or '—'}",
             f"  Pricing context (for your understanding ONLY — never write "
-            f"these numbers in the proposal text, the bid form displays them): "
+            f"these numbers or any duration in the proposal text, the bid form displays them): "
             f"bid {project.currency} {pricing['amount']:.0f}, "
             f"delivery ~{duration['days']} days",
             "",
             "PROJECT DESCRIPTION (source of specific details to reference):",
-            self._clip_description(project.description or "")[:3500],
+            self._clip_description(project.description or "")[:_WRITER_DESC_CHARS],
             "",
             render_profile(self.profile, project.title or "", project.skills or ""),
             "",
             "WRITING INSTRUCTIONS:",
-            f"  - Language: {analysis['language']}",
-            f"  - Length: 90–{min(150, self.max_words)} words — shorter and sharper wins; "
-            f"never exceed {self.max_words}.",
+            f"  - Language: {analysis['language']} — the client's register: "
+            f"{style.get('formality', 'neutral')}"
+            + (f", addresses the reader as '{style['address']}'" if style.get("address") else "")
+            + f"; technical level: {style.get('technical_level', 'some').replace('_', ' ')}.",
+            self._length_hint(analysis, self.max_words),
             f"  - Opening move: {opening}",
-            f"  - {closing}",
+            f"  - Closing move: {closing}",
             f"  - At most {self.max_questions} questions"
-            + (f"; consider asking about: {'; '.join(analysis['questions'])}"
-               if analysis["questions"] else " — only if genuinely needed."),
+            + (f"; the ones worth asking: {'; '.join(questions[: self.max_questions])}"
+               if questions else " — only if genuinely needed."),
+            self._proof_instruction(analysis, picks),
         ]
         if sample:
             parts.append(
-                f"  - You MAY offer this small sample if it flows naturally, clearly "
-                f"described as small: {sample}"
+                f"  - You MAY offer this small sample — as an option that helps them judge the "
+                f"direction, never as free or finished work: {sample}"
             )
         else:
             parts.append("  - Do NOT offer a free sample or any unpaid work on this project.")
-        if pm:
-            parts.append(f"  - Best proof point from the profile: the portfolio item \"{pm['title']}\".")
-        elif self.profile.get("source") == "freelancer" and not picks["portfolio"]:
-            parts.append("  - No portfolio item fits closely: don't cite one. If it reads "
-                         "naturally, invite them to look through your reviews on your profile.")
         if self.profile.get("source") == "none":
             parts.append("  - You have no verified profile: make no statement about your past "
                          "work and don't mention a profile.")
@@ -687,6 +823,10 @@ class ProjectAnalyzer:
             endings = [re.split(r"(?<=[.!?])\s+", r.strip())[-1][:70] for r in recent[:10]]
             parts += ["", "ENDINGS ALREADY USED ON OTHER PROJECTS (don't reuse their wording or shape):"]
             parts += [f"  - {e}" for e in endings]
+            habits = overused_phrases(recent)
+            if habits:
+                parts += ["", "PHRASES YOU HAVE BEEN OVERUSING ACROSS BIDS (don't use them):"]
+                parts += [f"  - {h}" for h in habits]
         if feedback:
             parts += ["", "REVIEWER FEEDBACK ON THE PREVIOUS DRAFT (fix all of it):", feedback]
         return "\n".join(parts)
@@ -713,7 +853,7 @@ class ProjectAnalyzer:
     def _review_proposal(self, project, analysis, text: str) -> dict:
         """LLM critic pass. Crash-proof: an LLM failure returns a neutral pass."""
         user = "\n\n".join([
-            "PROJECT BRIEF:\n" + self._clip_description(project.description or "")[:2500],
+            "PROJECT BRIEF:\n" + self._clip_description(project.description or "")[:_REVIEW_DESC_CHARS],
             "WHAT THE CLIENT ASKS BIDDERS TO DO: "
             + ("; ".join(analysis.get("client_asks") or []) or "nothing specific"),
             render_profile(self.profile, project.title or "", project.skills or ""),
@@ -1127,11 +1267,18 @@ class ProjectAnalyzer:
             db.session.commit()
             return self.analyze_project(project_id)
 
-        for key in ("client_problem", "proposal_angle"):
+        # Analyses written before v4 lack the newer fields; the writer copes with blanks.
+        for key in ("client_problem", "proposal_angle", "first_milestone", "expected_outcome"):
             analysis.setdefault(key, "")
-        for key in ("specific_details", "client_asks", "approach"):
+        for key in ("specific_details", "client_asks", "approach", "confirmed_requirements",
+                    "assumptions", "constraints", "decision_questions",
+                    "implementation_considerations", "solution_options"):
             analysis.setdefault(key, [])
         analysis.setdefault("sample_offer", {"appropriate": False, "idea": ""})
+        analysis.setdefault("client_style", {"formality": "neutral", "technical_level": "some",
+                                             "address": ""})
+        if isinstance(analysis.get("portfolio_match"), dict):
+            analysis["portfolio_match"].setdefault("fit", "strong")   # the pre-v4 meaning
 
         previous_status = project.status if project.status != "analyzing" else "draft_ready"
         project.status = "analyzing"
