@@ -28,6 +28,77 @@ The **Projects** page (`/projects`) drives a three-step pipeline:
 Everything is Space-scoped: each workspace has its own projects, settings,
 profile, and Freelancer cookies.
 
+On top of the buttons, two things now run on their own (see the sections below): a
+**daily discovery** at 23:00 local time that files the projects published that day and
+sends the eligible ones to analysis, and an **automatic cleanup** that removes Skipped and
+Failed projects 24 hours after they entered that status. Neither ever places a bid.
+
+## Daily discovery
+
+Every day at the configured local time (default **23:00, Africa/Casablanca**) the
+scheduler reads your search through Freelancer's API, newest first, up to
+**Search Pages to Scan** pages (default 10 = 200 projects), and files every project whose
+real publication time (`time_submitted`) falls on that local calendar day. The scan stops
+as soon as it reaches yesterday's projects. The usual filters apply, already-known projects
+are updated in place (never duplicated — the Freelancer project id is the key), projects the
+cleanup removed are never re-created, and every eligible project of the day is sent to
+analysis and proposal writing (if *Auto-Analyze After Fetch* is on). Submission stays manual.
+
+**Coverage is reported honestly.** A run that read past midnight (or reached the end of the
+results) is *complete*: it saw every project published that day in your search. A run that
+ran out of pages first is *partial* — the dashboard says so, and its count is the number found
+in the pages read, never a total for Freelancer.
+
+**How it is scheduled.** The `celery_beat` service sends a tick every minute. The tick works
+out, per Space, the most recent slot from the Space's own time and timezone (computed with
+the version-locked IANA tz database, so daylight saving and Morocco's Ramadan / September-2026
+offset changes need nothing from you) and makes sure exactly one run exists for that local
+day — a unique database key, so two ticks or a restarted scheduler can't double it.
+
+| situation | what happens |
+|---|---|
+| scheduler/worker down at 23:00, back within 20 h | the run starts on the next tick, marked *caught up late*; a run caught up the next morning covers the whole previous day |
+| down for longer | the slot is reported as missed, never back-filled days later |
+| worker killed mid-run | the run is marked *interrupted* at restart and retried (up to 3 attempts) |
+| Freelancer unreachable / 5xx | retried with back-off (10, 20 min) |
+| expired cookies, a security wall, missing search URL | *failed* or *skipped* with the reason; not retried until you fix it |
+| a manual fetch is running | the discovery waits for it (fetch lock) instead of interleaving |
+| you press Stop | the run is *stopped* and not restarted automatically |
+| you change the time or timezone | the schedule restarts from that moment: no instant "missed" run |
+
+Projects published after the run time (for example 23:00–24:00) belong to that day but are
+read only by manual fetches; move the time closer to midnight if you want them.
+
+Settings → **Daily Discovery & Cleanup** has the switch, time, timezone and page count, the
+scheduler's live status (heartbeat), the next run, the last run and the last successful run,
+and a *Run today's discovery now* button that runs the same thing on demand.
+
+## Automatic cleanup
+
+Every 15 minutes, Skipped and Failed projects that have been in that status for
+**24 hours** (configurable, 1–720) are deleted with their files, proposal and logs. The clock
+is the moment the project *entered* the status (`status_changed_at`), not its publication
+date; a retry that moves it out restarts the clock. Never deleted, whatever their age:
+projects with any trace of a bid (a submission, a Place-Bid click — `bid_clicked_at` — or an
+error saying the bid could not be verified or already exists) and projects with an analysis
+or rewrite queued. Each deletion leaves a row in `project_archive` (title, status, reason,
+times), which is also what stops the next fetch from fetching it again; archive rows are kept
+60 days. Rows existing before this change got `status_changed_at` = their last update, which
+is never earlier than the real transition, so they can only expire late, not early. The
+Projects table shows, on each skipped or failed row, when it will be removed (or why it is
+kept).
+
+## Dashboard
+
+The dashboard opens with **Projects · Today**: projects published today (by publication time,
+in your search scope), proposals ready today (ready to submit, awaiting approval, submitted;
+drafts held for an unsupported claim are counted apart), projects processing (analyzing +
+queued), skipped/failed now, the last discovery run (pages scanned, found that day, eligible,
+sent to analysis, coverage, results so far) and the next scheduled run with the scheduler's
+health. All numbers come from the database; times are formatted by the server in the
+discovery timezone (a browser's own tz data can be out of date — Chromium still had Casablanca
+on UTC+1 after the September 2026 change). The section refreshes every minute and on events.
+
 ## Project lifecycle
 
 ```
@@ -130,6 +201,8 @@ implausible next-day promises.
 
 ## How proposals are written
 
+(The evidence behind these rules is in `docs/PROPOSAL_STRATEGY.md`.)
+
 The goal is not a correct bid but one that makes the client reply. Each proposal is
 built from what the analysis found in *this* brief: the problem behind the request,
 the specifics only this client wrote, and a concrete approach. As a flexible guide it
@@ -153,11 +226,22 @@ still carries one of the problems above, or that tells the client you can't do t
 goes to **Needs review**, never to the submit queue. If the writer itself concludes there
 is no honest bid to make, the project is skipped with that reason instead.
 
-**What keeps them from sounding alike.** Formula openings ("The key…", "The tricky
-part…", "I have read…"), stock closings ("Message me here…", "I'll walk you through…")
-and stock AI phrases are rejected, each project gets a different opening and closing
-approach, and a draft that starts or ends like a recent proposal is rewritten. A solid
+**What keeps them from sounding alike.** Formula openings ("The key…", "I'd start by…",
+"I have read…", "Hola,", "Empezaría…"), stock closings ("Message me here…", "If you reply,
+I'll first…", "Choose me…"), résumé lines ("My background includes…"), recited checklists,
+compound questions, free-work promises and stated durations are rejected; each project gets a
+different opening and closing move (diagnosis, constraint, decision, risk, outcome); the
+writer is told which four-word phrases this account has been overusing lately; and a draft
+that starts, ends or repeats a middle sentence like recent proposals is rewritten. A solid
 block of text is broken into paragraphs without changing a word.
+
+**What the analysis gives the writer.** Confirmed requirements vs. assumptions, constraints,
+one to three implementation considerations with why they matter, practical options, a small
+paid first milestone the client could approve, the expected outcome, up to two decision
+questions (two concrete options each), the client's register (formal/casual, technical level,
+tú/usted, tu/vous) and a graded portfolio match — only a *strong* match (the same kind of
+deliverable) may be cited as similar work. The full brief is used (analysis up to 15,000
+characters, the writer 6,000, the reviewer 4,000).
 
 **Without a readable profile.** The last saved copy keeps working. If there has never
 been one, proposals describe only the project and your approach and make no claims
@@ -189,12 +273,17 @@ edited. Your own edits only have to pass the integrity checks, not the style one
 
 ## Running workers
 
-Nothing new is needed — the same services run everything:
+The daily discovery and the cleanup need the **`celery_beat`** service (added to
+`docker-compose.yml`); everything else runs on the existing worker:
 
 ```bash
-docker compose up -d --build web celery_worker   # after any code change
-docker compose logs -f celery_worker             # watch the pipeline
+docker compose up -d --build web celery_worker celery_beat   # after any code change
+docker compose logs -f celery_worker                         # watch the pipeline
+docker compose logs -f celery_beat                           # the scheduler's ticks
 ```
+
+Run exactly one `celery_beat`. If it is not running, Settings and the dashboard say
+"Scheduler not running" (no heartbeat for 3 minutes) and no daily run happens.
 
 The three Projects-page buttons enqueue `tasks.fetch_projects`,
 `tasks.analyze_all_projects` / `tasks.analyze_project`, and

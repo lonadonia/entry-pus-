@@ -68,3 +68,33 @@ IP changes when it is stopped and started).
   for about 12 minutes.
 - Deploy only with `docker compose up -d --build web celery_worker`. nginx also fronts the
   unrelated growmaz sites on this host and was neither changed nor restarted.
+
+
+---
+
+# Pending change — 2026-11-04 (daily discovery, cleanup, dashboard, proposal writer)
+
+**Not deployed yet** — written in a cloud session without access to the server. To roll out:
+
+```bash
+cd /home/ubuntu/freelancer-contest-bot
+git pull
+sudo docker compose stop -t 290 celery_worker        # warm shutdown: keep the task in flight
+sudo docker compose up -d --build web celery_worker celery_beat
+sudo docker compose logs -f celery_beat              # a tick every minute
+```
+
+- **New service `celery_beat`** (one instance). Without it nothing daily happens; Settings →
+  Daily Discovery & Cleanup shows "Scheduler not running".
+- **Schema** — applied automatically at boot by `migrate_discovery_and_cleanup()`: adds
+  `projects.status_changed_at` (backfilled from `updated_at`) and `proposals.bid_clicked_at`,
+  creates `project_discovery_runs` and `project_archive`. Additive only; nothing is dropped.
+- **First cleanup** (~15 min after `celery_beat` starts) deletes Skipped/Failed projects whose
+  last update is more than 24 h old — the backlog that has been accumulating. Projects with any
+  trace of a bid are kept; every deleted row stays listed in `project_archive`. To review the
+  backlog first, start only `web celery_worker`, set *Auto-Delete Skipped / Failed* to Disabled
+  on the Settings page, and start `celery_beat` afterwards.
+- **First discovery**: tonight at 23:00 Africa/Casablanca (UTC+0 since 2026-09-20 in the tz
+  database). Turning the schedule on never back-fills earlier days.
+- The removed 6-hourly *contest* fetch had never run (beat was not deployed); nothing contest-side
+  changes.
