@@ -106,11 +106,13 @@ sudo docker compose logs -f celery_beat              # a tick every minute
 
 **Not deployed yet.** Same roll-out as the change above (one `git pull`, then
 `sudo docker compose stop -t 290 celery_worker && sudo docker compose up -d --build web celery_worker celery_beat`).
-No schema change: the three new settings rows (`poyo_api_key`, `kovapi_api_key` as
-secrets, `contest_skip_no_ai`) are seeded at boot by `seed_default_settings()`.
+No schema change: the four new settings rows (`poyo_api_key`, `kovapi_api_key`,
+`apimart_api_key` as secrets, `contest_skip_no_ai`) are seeded at boot by
+`seed_default_settings()`.
 
 **New image providers** (AI Agents → Image Generation AI): **PoYo** and **KovAPI**, each with
-GPT Image 2.5 **Flare** and **Sunburst**. Paste the key under Provider Credentials, press
+GPT Image 2.5 **Flare** and **Sunburst**, and **APIMart** with Flare, Sunburst and
+**GPT Image 2.5 Ext** (Flare or Sunburst via `version`). Paste the key under Provider Credentials, press
 *Test connection* (free: balance + status endpoint), then *Test model* (one real 1K test
 image; KovAPI charges 1 credit = $0.005). Nothing changes for a Space until someone selects
 one of them.
@@ -120,6 +122,11 @@ one of them.
   `server_host` to get webhooks. KovAPI accepts the public http address.
 - KovAPI renders 1K by centre-cropping a square / 3:2 / 2:3 frame; 2K ($0.03) and
   4K ($0.05) render the exact ratio. The prompt keeps content central at 1K.
+- APIMart accepts the public http `server_host` for webhooks (it posts to
+  `/api/apimart/callback`). Its Flare/Sunburst default quality "Auto" reserves funds
+  at the Max price ($0.21 per 1024² image) until a task settles — pick High for a
+  fixed cost. Its balance card shows the key's own quota, so a used-up key is
+  caught by the free Test connection.
 
 **Behaviour changes worth knowing**
 - **Contests whose brief forbids AI-generated work are now `skipped`** (before any paid

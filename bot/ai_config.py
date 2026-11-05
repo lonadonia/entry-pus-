@@ -11,11 +11,12 @@ Settings owned here (all per-Space, all written only by /api/ai/*):
     ai_chat_model       registry key, e.g. "kie:gpt-5-5"
     ai_chat_params      JSON {model_key: {param: value}} — per model, so
                         switching back and forth keeps each model's tuning
-    ai_image_provider   "apidot" | "kie" | "poyo" | "kovapi"
+    ai_image_provider   "apidot" | "kie" | "poyo" | "kovapi" | "apimart"
     ai_image_model      registry key
     ai_image_params     JSON {model_key: {param: value}}
     apidot_api_key      APIDot credential (kie.ai keeps the existing kie_api_key;
-                        PoYo and KovAPI use poyo_api_key / kovapi_api_key)
+                        PoYo, KovAPI and APIMart use poyo_api_key /
+                        kovapi_api_key / apimart_api_key)
     ai_provider_status  JSON {provider: {ok, message, checked_at}} — last test
 
 The invariant the product is built on: **one provider per category**. The model

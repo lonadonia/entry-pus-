@@ -262,6 +262,11 @@ def _as_dict(value: Any) -> dict:
     return value if isinstance(value, dict) else {}
 
 
+def _ok_code(code: int) -> bool:
+    """0 or any 2xx in a body's own `code` field means success."""
+    return code == 0 or 200 <= code < 300
+
+
 def extract_signals(body: Any, http_status: Optional[int]) -> dict:
     """
     Pull every classification signal out of a provider body.
@@ -288,10 +293,11 @@ def extract_signals(body: Any, http_status: Optional[int]) -> dict:
                 types.append(value.strip())
 
     # `body.code` is the provider's own status and outranks the HTTP status:
-    # APIDot answers HTTP 200 with {"code": 400, …} for validation errors.
+    # APIDot answers HTTP 200 with {"code": 400, …} for validation errors. Any
+    # 2xx code is a success — APIMart's accepted task is {"code": 202, …}.
     body_code = body.get("code")
     effective_status = http_status
-    if isinstance(body_code, int) and body_code not in (0, 200):
+    if isinstance(body_code, int) and not _ok_code(body_code):
         effective_status = body_code
 
     provider_code = None
@@ -299,7 +305,7 @@ def extract_signals(body: Any, http_status: Optional[int]) -> dict:
         if isinstance(candidate, str) and candidate.strip():
             provider_code = candidate.strip()
             break
-        if isinstance(candidate, int) and candidate not in (0, 200):
+        if isinstance(candidate, int) and not _ok_code(candidate):
             provider_code = str(candidate)
             break
 
@@ -476,7 +482,7 @@ def classify_response(
         isinstance(body, dict)
         and (body.get("error") is not None
              or (isinstance(signals["body_code"], int)
-                 and signals["body_code"] not in (0, 200)))
+                 and not _ok_code(signals["body_code"])))
     )
     if (status is None or status < 400) and not has_error_body:
         return None                                   # success

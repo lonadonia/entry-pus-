@@ -33,6 +33,12 @@ webhook is blocked.
              result: data[0].url, status queued|processing|succeeded|failed;
              references inline as data URIs (there is no upload endpoint)
 
+    APIMart  POST /v1/images/generations       → GET /v1/tasks/{id}
+             webhook `webhook` (a BASE url)    → APIMart posts to
+                                                 <base>/callback = /api/apimart/callback
+             result: data.result.images[].url[], status pending|processing|
+             completed|failed|cancelled
+
 `poll_once()` is the non-blocking step both waits are built from: the
 generator submits every variation first and then polls them together, so three
 variations cost one render time on the single worker instead of three.
@@ -58,8 +64,8 @@ import requests
 
 from app.models import add_log, get_setting
 from bot import ai_config, ai_errors as err, ai_health, ai_registry as reg
-from bot.image_host import (ApidotFileUploader, KieFileUploader,
-                            PoyoFileUploader, data_uri_for)
+from bot.image_host import (ApidotFileUploader, ApimartFileUploader,
+                            KieFileUploader, PoyoFileUploader, data_uri_for)
 
 # ── Shared timing constants ────────────────────────────────────────────────────
 
@@ -188,6 +194,9 @@ class ImageTransport:
     # from an upload endpoint.
     inline_references = False
     max_references = MAX_REFERENCE_IMAGES
+    # Status answers that mean "this task cannot be read" — counted toward
+    # STATUS_STRIKES instead of being retried until TASK_TIMEOUT.
+    strike_statuses = (401, 403, 404)
 
     def __init__(self, cfg):
         self.cfg = cfg
@@ -384,9 +393,9 @@ class ImageTransport:
         except ValueError:
             body = None
         code = body.get("code") if isinstance(body, dict) else None
-        effective = (code if isinstance(code, int) and code not in (0, 200)
+        effective = (code if isinstance(code, int) and not (code == 0 or 200 <= code < 300)
                      else resp.status_code)
-        if effective in (401, 403, 404):
+        if effective in self.strike_statuses:
             strikes = self._strikes.get(task_id, 0) + 1
             self._strikes[task_id] = strikes
             text = json.dumps(body)[:300] if body is not None else (resp.text or "")[:300]
@@ -914,7 +923,7 @@ class ApidotImageTransport(ImageTransport):
         body = data.get("data") if isinstance(data.get("data"), dict) else data
 
         code = data.get("code")
-        if code is not None and code not in (200, 0):
+        if isinstance(code, int) and not (code == 0 or 200 <= code < 300):
             reason = data.get("msg") or data.get("message") or f"code={code}"
             raise RuntimeError(f"{self.provider_label} task {task_id} failed: {reason}")
 
@@ -1140,14 +1149,172 @@ class KovapiImageTransport(ImageTransport):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+#  APIMart
+# ══════════════════════════════════════════════════════════════════════════════
+
+class ApimartImageTransport(ImageTransport):
+    """
+    APIMart's asynchronous image tasks, for both documented model families:
+
+      gpt-image-2.5-flare | -sunburst   prompt, size (auto | 15 ratios | WxH),
+                                        resolution 1k|2k|4k, quality, background,
+                                        output_format, moderation, image_urls
+      gpt-image-2.5-ext + version       prompt, size (auto | 10 ratios),
+                                        resolution 1K|2K|4K, image_urls
+
+    The body is flat JSON (no `input` wrapper) and every field is sent exactly
+    as the registry declares it — note the two pages spell the resolution in
+    different cases. Submission answers with a task id in one of three shapes
+    (a `data` list with `task_id`, or a 202 `data` object with `id`), results
+    are polled at GET /v1/tasks/{id} ("every 2–5 seconds"), and the webhook is
+    a BASE url that APIMart suffixes with "/callback".
+    """
+
+    callback_path = "/api/apimart"      # APIMart posts to <this>/callback
+    redis_prefix = "apimart_result:"
+    canvas_param = "size"
+    submit_path = "/v1/images/generations"
+    callback_field = "webhook"
+    TASK_PATH = "/v1/tasks/"
+    query_interval = 5
+    # An unknown task id answers 400 "Invalid task ID".
+    strike_statuses = (400, 401, 403, 404)
+    # Ratio sizes carry a tier; an exact WxH "ignores" it.
+    _CANVAS_FIELDS = {"size", "custom_width", "custom_height"}
+    _PENDING = {"submitted", "pending", "processing", "queued", "running"}
+
+    def build_payload(self, prompt, aspect_hint, reference_urls) -> dict:
+        params = self.cfg.params
+        payload = {"model": self.cfg.wire_model, "prompt": prompt}
+        for spec in self.cfg.model["params"]:
+            key = spec["key"]
+            if key in self._CANVAS_FIELDS or spec.get("unavailable"):
+                continue
+            value = params.get(key)
+            if value is None or value == "":
+                continue
+            payload[spec.get("wire") or key] = value
+
+        size = self.resolve_canvas(aspect_hint)
+        if size == "custom":
+            width, height, _ = reg.gpt25_custom_size(params.get("custom_width", 1024),
+                                                     params.get("custom_height", 1024))
+            payload["size"] = f"{int(width)}x{int(height)}"
+            payload.pop("resolution", None)
+        elif size:
+            payload["size"] = size                # "auto" is the documented default
+
+        if (payload.get("background") == "transparent"
+                and payload.get("output_format") == "jpeg"):
+            payload["output_format"] = "png"
+        if reference_urls:
+            payload["image_urls"] = list(reference_urls)[:MAX_REFERENCE_IMAGES]
+        return payload
+
+    def extract_task_id(self, body: dict) -> Optional[str]:
+        """data[0].task_id (200), data.id (202), or a bare task object."""
+        data = body.get("data") if isinstance(body, dict) else None
+        if isinstance(data, list):
+            data = data[0] if data and isinstance(data[0], dict) else {}
+        if not isinstance(data, dict):
+            data = body if isinstance(body, dict) else {}
+        task_id = data.get("task_id") or data.get("id")
+        return str(task_id) if task_id else None
+
+    def status_request(self, task_id: str):
+        # `language` only changes error.message; English keeps logs readable.
+        return self.cfg.base_url + self.TASK_PATH + str(task_id), {"language": "en"}
+
+    @staticmethod
+    def _first_url(task: dict) -> Optional[str]:
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        for image in result.get("images") or []:
+            urls = image.get("url") if isinstance(image, dict) else image
+            for url in urls if isinstance(urls, list) else [urls]:
+                if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+                    return url
+        return None
+
+    def _task_state(self, task_id: str, task: dict) -> Tuple[str, Optional[str]]:
+        status = (task.get("status") or "").lower()
+        if status == "completed":
+            url = self._first_url(task)
+            if url:
+                return ("success", url)
+            add_log("generator", "WARNING",
+                    f"APIMart reported completed but no image url for {task_id}: "
+                    f"{json.dumps(task)[:600]}")
+            return ("unknown", None)
+        if status in ("failed", "cancelled", "canceled"):
+            error = task.get("error") if isinstance(task.get("error"), dict) else {}
+            message = error.get("message") or status
+            code = error.get("code") or error.get("type")
+            if isinstance(code, str) and code and code not in message:
+                message = f"{code}: {message}"
+            return ("fail", message)
+        return ("pending", None)
+
+    @staticmethod
+    def _task_of(body: dict) -> dict:
+        data = body.get("data")
+        return data if isinstance(data, dict) else body
+
+    def query_task(self, task_id: str) -> Tuple[str, Optional[str]]:
+        body, gone = self._fetch_status(task_id)
+        if gone:
+            return ("fail", gone)
+        if body is None:
+            return ("unknown", None)
+        return self._task_state(task_id, self._task_of(body))
+
+    def extract_callback_url(self, task_id: str, data: dict) -> str:
+        """The webhook body is the task object (top-level id / status / result)."""
+        task = self._task_of(data)
+        state, value = self._task_state(task_id, task)
+        if state == "success":
+            add_log("generator", "SUCCESS",
+                    f"✅ Image URL received for {task_id}: {value}")
+            return value
+        if state == "fail":
+            raise RuntimeError(f"APIMart task {task_id} failed: {value}")
+        if (task.get("status") or "").lower() in self._PENDING:
+            raise NotFinal(f"APIMart task {task_id} is {task.get('status')}")
+        raise RuntimeError(
+            f"APIMart task {task_id} callback carried no image URL "
+            f"(status {task.get('status')!r}). Data keys: {list(data.keys())}")
+
+    def host_reference(self, local_path: str) -> str:
+        return ApimartFileUploader(self.cfg.api_key).upload(local_path)
+
+    def refine_error(self, error: err.ProviderError) -> err.ProviderError:
+        """
+        A 402 while THIS KEY's own quota (GET /v1/balance) is used up is the
+        key's limit, not the account's — APIMart reports both, so ask it.
+        """
+        if error.category != err.BILLING or error.is_key_limit:
+            return error
+        try:
+            info = ai_health.fetch_balance(self.cfg.provider, api_key=self.cfg.api_key,
+                                           force=True)
+        except Exception:
+            return error
+        if (info.get("ok") and info.get("scope") == "key"
+                and info.get("credits") is not None and info["credits"] <= 0):
+            error.details = dict(error.details or {}, billing_kind=err.KEY_LIMIT)
+            error.message = f"{error.message} (this API key's own quota is used up)"
+        return error
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 #  Factory
 # ══════════════════════════════════════════════════════════════════════════════
 
 _TRANSPORTS = {
-    "kie_image":    KieImageTransport,
-    "apidot_image": ApidotImageTransport,
-    "poyo_image":   PoyoImageTransport,
-    "kovapi_image": KovapiImageTransport,
+    "kie_image":     KieImageTransport,
+    "apidot_image":  ApidotImageTransport,
+    "poyo_image":    PoyoImageTransport,
+    "kovapi_image":  KovapiImageTransport,
+    "apimart_image": ApimartImageTransport,
 }
 
 
@@ -1241,12 +1408,26 @@ def probe_provider(provider: str) -> dict:
             "category": error.category, "detail": error.log_line()}
 
 
-# The cheapest real job each provider documents. Only keys the model declares
-# are overridden, so nothing undocumented is ever sent.
-_PROBE_OVERRIDES = {"quality": "low", "resolution": "1K", "size": "1:1",
-                    "aspect_ratio": "1:1", "background": "auto",
-                    "output_format": "png"}
+# The cheapest real job each provider documents: the lowest tier and quality
+# the model itself lists (APIMart spells its tiers "1k", the others "1K"),
+# a square canvas, PNG. Only declared parameters with a declared value are set.
+_PROBE_WANTS = {"quality": ("low",), "resolution": ("1K", "1k"),
+                "size": ("1:1",), "aspect_ratio": ("1:1",),
+                "background": ("auto",), "output_format": ("png",)}
 _PROBE_PROMPT = "A plain flat grey circle centred on a white background."
+
+
+def _probe_params(model: dict) -> dict:
+    out = {}
+    for spec in model["params"]:
+        wanted = _PROBE_WANTS.get(spec["key"])
+        if not wanted or spec.get("type") != "select":
+            continue
+        offered = [o["value"] for o in spec["options"]]
+        choice = next((v for v in wanted if v in offered), None)
+        if choice is not None:
+            out[spec["key"]] = choice
+    return out
 
 
 def probe_generation(provider: str, model_key: Optional[str] = None) -> dict:
@@ -1270,9 +1451,7 @@ def probe_generation(provider: str, model_key: Optional[str] = None) -> dict:
               or models[0])
     try:
         cfg = ai_config.resolve(reg.CATEGORY_IMAGE, chosen["key"])
-        declared = {spec["key"] for spec in cfg.model["params"]}
-        cfg.params = dict(cfg.params, **{k: v for k, v in _PROBE_OVERRIDES.items()
-                                         if k in declared})
+        cfg.params = dict(cfg.params, **_probe_params(cfg.model))
         transport = transport_for(cfg)
         # Nobody waits for this job, so no webhook is registered for it.
         transport._callback_refused = transport._callback_note_logged = True

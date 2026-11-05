@@ -899,6 +899,29 @@ def kovapi_callback():
     return _stash_callback("kovapi_result:", str(task_id), data, "KovAPI")
 
 
+@bp.route("/apimart/callback", methods=["POST"])
+def apimart_callback():
+    """
+    Webhook target for APIMart task completion. The submit body's `webhook`
+    field is a BASE url — APIMart posts to "<webhook>/callback" — so the
+    generator sends `<server_host>/api/apimart` and the result lands here.
+
+    The body is the task object (top-level `id`, `status`, `result`,
+    `error`), sent only at a terminal state and retried at ~10 / 30 / 60 s
+    when no 2xx comes back within ~10 s; duplicates are possible, and storing
+    by task id makes a repeat harmless.
+    """
+    data = request.get_json(silent=True) or {}
+    add_log("generator", "INFO", f"APIMart callback received: {json.dumps(data)[:2000]}")
+    task = data.get("data") if isinstance(data.get("data"), dict) else data
+    task_id = (task.get("id") or task.get("task_id")) if isinstance(task, dict) else None
+    if not task_id:
+        add_log("generator", "ERROR",
+                f"APIMart callback missing the task id. Body: {json.dumps(data)[:500]}")
+        return jsonify({"error": "no task id"}), 400
+    return _stash_callback("apimart_result:", str(task_id), data, "APIMart")
+
+
 @bp.route("/debug/test-kie", methods=["GET"])
 def debug_test_kie():
     """

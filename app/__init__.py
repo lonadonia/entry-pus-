@@ -171,7 +171,8 @@ def _register_request_guards(app: Flask) -> None:
     # Image providers POST task results here; they carry no login cookie and
     # no Space header (the worker matches results by task id).
     _WEBHOOK_PATHS = {"/api/kie-callback", "/api/apidot-callback",
-                      "/api/poyo-callback", "/api/kovapi-callback"}
+                      "/api/poyo-callback", "/api/kovapi-callback",
+                      "/api/apimart/callback"}
 
     def _is_public(path: str) -> bool:
         return (

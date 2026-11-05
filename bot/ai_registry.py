@@ -29,6 +29,10 @@ Sources (fetched 2026-09-17, image providers re-checked 2026-11-04):
            (the same submit / status / upload / balance contract as APIDot)
   KovAPI   https://docs.kovapi.com/gpt-image-2.5-{flare,sunburst},
            /guide/errors, /guide/billing, /api (OpenAI-style async image jobs)
+  APIMart  https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5/generation,
+           …/gpt-image-2.5-ext/generation, …/tasks/status, …/tasks/webhook,
+           …/uploads/images, …/account/token-balance, …/account/user-balance
+           (fetched 2026-11-05)
 """
 
 from typing import Any, Optional
@@ -114,6 +118,26 @@ PROVIDERS: dict[str, dict] = {
         "key_setting": "kovapi_api_key",
         "key_label": "KovAPI API Key",
         "accent": "#0ea5e9",
+    },
+    "apimart": {
+        "id": "apimart",
+        "label": "APIMart",
+        "tagline": "GPT Image 2.5 Flare / Sunburst and the 2.5-ext line as async "
+                   "tasks — webhook or polling delivery.",
+        "site": "https://apimart.ai/",
+        "docs_url": "https://docs.apimart.ai/en/",
+        "base_url": "https://api.apimart.ai",
+        # GET {base}/v1/balance reports THIS KEY's own quota —
+        # {"success":true,"remain_credits":105,"unlimited_quota":false,…}, -1
+        # when the key is unlimited — so a capped key is visible for free.
+        # An unlimited key falls back to the account: GET /v1/user/balance.
+        "balance_endpoint": "/v1/balance",
+        "balance_path": "remain_credits",
+        "balance_scope": "key",
+        "balance_fallback_endpoint": "/v1/user/balance",
+        "key_setting": "apimart_api_key",
+        "key_label": "APIMart API Key",
+        "accent": "#ec4899",
     },
 }
 
@@ -275,6 +299,11 @@ GPT25_PIXELS_MIN = 655_360
 GPT25_PIXELS_MAX = 8_294_400
 GPT25_RATIO_MAX = 3.0
 KOVAPI_SIZE_RULES = "kovapi"
+# APIMart documents the same exact-size limits (multiples of 16, ≤ 3840, ≤ 3:1,
+# 655,360–8,294,400 px) but no tier coupling: `resolution` "applies only to
+# aspect-ratio sizes" and is ignored for an exact WxH, and `auto` is the
+# default at every tier.
+APIMART_SIZE_RULES = "apimart"
 
 
 def _snap16(value: float) -> int:
@@ -366,6 +395,18 @@ def apply_constraints(model: dict, clean: dict) -> list[str]:
             clean["output_format"] = "png"
             notes.append("Output format set to PNG — a transparent background "
                          "needs PNG or WEBP")
+    elif rules == APIMART_SIZE_RULES:
+        if clean.get("size") == "custom":
+            w, h, changed = gpt25_custom_size(clean.get("custom_width"),
+                                              clean.get("custom_height"))
+            if changed:
+                notes.append("Custom size: " + "; ".join(changed))
+            clean["custom_width"], clean["custom_height"] = w, h
+        if (clean.get("background") == "transparent"
+                and clean.get("output_format") == "jpeg"):
+            clean["output_format"] = "png"
+            notes.append("Output format set to PNG — a transparent background "
+                         "needs PNG or WEBP")
     return notes
 
 
@@ -446,6 +487,79 @@ def _kovapi_image_params():
         ], "medium",
             "Applies at 1K only — 2K and 4K always render at medium. Does not "
             "change the price; the documented default is medium."),
+    ]
+
+
+# APIMart, gpt-image-2.5-flare / -sunburst: auto + 15 ratios or an exact WxH.
+_APIMART_SIZES = _ratios([
+    "auto", "1:1", "3:2", "2:3", "4:3", "3:4", "5:4", "4:5", "16:9", "9:16",
+    "2:1", "1:2", "21:9", "9:21", "3:1", "1:3",
+]) + [("custom", "Custom (width × height)")]
+# APIMart, gpt-image-2.5-ext: "Aspect ratios only".
+_APIMART_EXT_SIZES = _ratios([
+    "auto", "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "5:4", "4:5", "21:9",
+])
+
+
+def _apimart_image_params():
+    """
+    APIMart's gpt-image-2.5-flare / -sunburst fields, as documented. Its
+    resolution values are LOWER-case (1k / 2k / 4k) — the -ext page uses 1K —
+    and are sent exactly as written. `n` stays at its default (one image per
+    variation) and `output_compression` / `mask_url` are not used by the bot.
+    """
+    return [
+        _select("quality", "Quality", [
+            ("auto", "Auto"), ("low", "Low"), ("medium", "Medium"), ("high", "High"),
+            ("xhigh", "XHigh"), ("max", "Max"),
+        ], "auto",
+            "Billed by the tokens actually generated — a 1024×1024 image costs "
+            "about $0.006 low, $0.013 medium, $0.053 high, $0.094 xhigh, $0.21 "
+            "max. “Auto” is the documented default and reserves funds at the "
+            "Max price until the task settles."),
+        _select("resolution", "Resolution", [
+            ("1k", "1K"), ("2k", "2K"), ("4k", "4K"),
+        ], "1k",
+            "Output tier for a ratio canvas (default 1K). A custom W×H sets the "
+            "exact size and ignores this."),
+        _select("size", "Canvas / Aspect ratio", _APIMART_SIZES, "auto",
+                "“Auto” keeps the ratio the brief analysis picked for each "
+                "contest. Custom sends an exact WIDTHxHEIGHT: multiples of 16, "
+                "long edge ≤ 3840, ≤ 3:1, 655,360–8,294,400 pixels; above "
+                "2560×1440 is experimental."),
+        _number("custom_width", "Custom width (px)", 1024,
+                "Sent as part of WIDTHxHEIGHT — adjusted on save to the nearest "
+                "valid size.", minimum=256, maximum=GPT25_EDGE_MAX, step=16,
+                show_if={"key": "size", "equals": "custom"}),
+        _number("custom_height", "Custom height (px)", 1024,
+                "Sent as part of WIDTHxHEIGHT (same rules as the width).",
+                minimum=256, maximum=GPT25_EDGE_MAX, step=16,
+                show_if={"key": "size", "equals": "custom"}),
+        _select("background", "Background", _BACKGROUNDS, "auto",
+                "Transparent requires PNG or WEBP output — JPEG has no alpha."),
+        _select("output_format", "Output format", [
+            ("png", "PNG"), ("jpeg", "JPEG"), ("webp", "WEBP"),
+        ], "png", "File type returned (default PNG). A WEBP result is converted "
+                  "to PNG on download for the entry upload."),
+        _select("moderation", "Moderation", [("low", "Low"), ("auto", "Auto")], "low",
+                "Content-filter strictness. APIMart sends “low” when the field "
+                "is omitted; “auto” is stricter."),
+    ]
+
+
+def _apimart_ext_params():
+    """gpt-image-2.5-ext: one model id, the engine picked by `version`."""
+    return [
+        _select("version", "Version", [("flare", "Flare"), ("sunburst", "Sunburst")],
+                "flare", "gpt-image-2.5-ext runs either engine; Flare is the "
+                         "documented default."),
+        _select("resolution", "Resolution", _RESOLUTIONS, "1K",
+                "Output tier (default 1K). Billed per image delivered, by "
+                "version and resolution."),
+        _select("size", "Canvas / Aspect ratio", _APIMART_EXT_SIZES, "auto",
+                "“Auto” keeps the ratio the brief analysis picked for each "
+                "contest, moved to the nearest documented ratio; this model "
+                "takes ratios only, no exact sizes."),
     ]
 
 
@@ -909,6 +1023,57 @@ MODELS: list[dict] = [
         "capabilities": {"reference_images": True},
         "size_rules": KOVAPI_SIZE_RULES,
         "params": _kovapi_image_params(),
+    },
+
+    # ───────────────────────── APIMart · image ────────────────────────────────
+    # POST /v1/images/generations, polled at GET /v1/tasks/{id}. "Including
+    # [image_urls] enables editing mode", so each model id covers both modes.
+    {
+        "key": "apimart:gpt-image-2.5-flare",
+        "provider": "apimart", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Flare",
+        "tagline": "Faster, for everyday work. Quality up to Max, 15 ratios or "
+                   "an exact W×H; edits with the contest's reference files.",
+        "wire_model": "gpt-image-2.5-flare",
+        "transport": "apimart_image",
+        "endpoint": "/v1/images/generations",
+        "auth": "bearer",
+        "docs_url": "https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5/generation",
+        "capabilities": {"reference_images": True, "mask": True,
+                         "custom_canvas": True, "output_format": True,
+                         "quality": True},
+        "size_rules": APIMART_SIZE_RULES,
+        "params": _apimart_image_params(),
+    },
+    {
+        "key": "apimart:gpt-image-2.5-sunburst",
+        "provider": "apimart", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Sunburst",
+        "tagline": "Favours editing precision; same fields and price as Flare.",
+        "wire_model": "gpt-image-2.5-sunburst",
+        "transport": "apimart_image",
+        "endpoint": "/v1/images/generations",
+        "auth": "bearer",
+        "docs_url": "https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5/generation",
+        "capabilities": {"reference_images": True, "mask": True,
+                         "custom_canvas": True, "output_format": True,
+                         "quality": True},
+        "size_rules": APIMART_SIZE_RULES,
+        "params": _apimart_image_params(),
+    },
+    {
+        "key": "apimart:gpt-image-2.5-ext",
+        "provider": "apimart", "category": CATEGORY_IMAGE,
+        "name": "GPT Image 2.5 Ext",
+        "tagline": "One model id running Flare or Sunburst (version); 10 ratios "
+                   "at 1K–4K, billed per image by version and tier.",
+        "wire_model": "gpt-image-2.5-ext",
+        "transport": "apimart_image",
+        "endpoint": "/v1/images/generations",
+        "auth": "bearer",
+        "docs_url": "https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5-ext/generation",
+        "capabilities": {"reference_images": True},
+        "params": _apimart_ext_params(),
     },
 ]
 

@@ -28,6 +28,7 @@ process-local fallback so a Redis outage degrades instead of crashing.
 
 import json
 import os
+import re
 import time
 from typing import Optional
 
@@ -268,21 +269,21 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
                 "error": f"No {meta['label']} API key is saved.",
                 "category": err.CONFIGURATION, "cached": False}
 
-    url = meta["base_url"].rstrip("/") + endpoint
     started = time.time()
-    try:
-        resp = requests.get(url, headers={"Authorization": f"Bearer {api_key}"},
-                            timeout=BALANCE_TIMEOUT)
-        try:
-            body = resp.json()
-        except ValueError:
-            body = {"message": resp.text[:200]}
-        problem = err.classify_response(
-            provider=provider, model=None, http_status=resp.status_code,
-            body=body, headers=resp.headers)
-    except requests.RequestException as exc:
-        problem = err.classify_exception(exc, provider=provider)
-        body = {}
+    problem, body = _read_balance(provider, meta["base_url"].rstrip("/") + endpoint,
+                                  api_key)
+    credits, data = (None, {}) if problem else extract_credits(meta, body)
+    # Where the number comes from. A key-scoped endpoint (APIMart's
+    # /v1/balance) sees the KEY's own quota — the cap no account balance can
+    # show; -1 / unlimited_quota means the key has none, so the account is read.
+    scope = meta.get("balance_scope", "account")
+    fallback = meta.get("balance_fallback_endpoint")
+    if (problem is None and fallback
+            and (credits is None or credits < 0 or data.get("unlimited_quota") is True)):
+        problem, body = _read_balance(provider, meta["base_url"].rstrip("/") + fallback,
+                                      api_key)
+        credits, data = (None, {}) if problem else extract_credits(meta, body)
+        scope = "account"
 
     latency_ms = int((time.time() - started) * 1000)
 
@@ -293,12 +294,11 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
                 "http_status": problem.http_status, "latency_ms": latency_ms,
                 "cached": False, "checked_at": time.time()}
 
-    credits, data = extract_credits(meta, body)
-
     entry = {
         "supported": True,
         "ok": True,
         "credits": credits,
+        "scope": scope,
         "email": data.get("email"),
         "checked_at": time.time(),
         "latency_ms": latency_ms,
@@ -308,18 +308,50 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
     _set(_balance_key(space_id, provider), entry, BALANCE_TTL)
 
     # A positive balance proves the account works — retire any stale billing
-    # block immediately instead of waiting out its TTL.
+    # block immediately instead of waiting out its TTL. A key limit is retired
+    # too when the reading is the key's own (only then can a balance see it).
     if credits is not None and credits > 0:
         block = get_block(provider, space_id)
         if (block and block.get("category") == err.BILLING
-                and not is_key_limit_block(block)):
+                and (not is_key_limit_block(block) or scope == "key")):
             clear_block(provider, space_id)
     elif credits is not None and credits <= 0:
-        block_provider(provider, err.ProviderError(
+        error = err.ProviderError(
             provider=provider, model=None, category=err.BILLING,
-            message=f"Balance is {credits:g} credits.",
-            retryable=False, scope=err.ACCOUNT), space_id)
+            message=(f"This API key's own quota is used up ({credits:g} credits "
+                     f"left)." if scope == "key" else f"Balance is {credits:g} credits."),
+            retryable=False, scope=err.ACCOUNT,
+            details={"billing_kind": err.KEY_LIMIT} if scope == "key" else {})
+        block_provider(provider, error, space_id)
     return entry
+
+
+def _read_balance(provider: str, url: str, api_key: str):
+    """GET one balance endpoint → (ProviderError | None, body)."""
+    try:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {api_key}"},
+                            timeout=BALANCE_TIMEOUT)
+        try:
+            body = resp.json()
+        except ValueError:
+            body = {"message": resp.text[:200]}
+        problem = err.classify_response(
+            provider=provider, model=None, http_status=resp.status_code,
+            body=body, headers=resp.headers)
+        if problem is None and isinstance(body, dict) and body.get("success") is False:
+            # APIMart answers HTTP 200 {"success": false, "message": "Failed to
+            # get token info: record not found"} for a key it does not know.
+            message = str(body.get("message") or "balance request refused")
+            unknown_key = bool(re.search(r"token|key|record not found", message, re.I))
+            problem = err.ProviderError(
+                provider=provider, model=None,
+                category=err.AUTHENTICATION if unknown_key else err.UNKNOWN,
+                message=message, retryable=False,
+                scope=err.ACCOUNT if unknown_key else err.REQUEST,
+                http_status=resp.status_code)
+        return problem, body
+    except requests.RequestException as exc:
+        return err.classify_exception(exc, provider=provider), {}
 
 
 def extract_credits(meta: dict, body) -> tuple[Optional[float], dict]:
@@ -420,6 +452,11 @@ def preflight(category: str, space_id: Optional[int] = None) -> Optional[err.Pro
     if info.get("supported") and info.get("ok"):
         credits = info.get("credits")
         if credits is not None and credits <= 0:
+            # The reading just opened the breaker; its block says whether the
+            # account or this key's own quota ran out.
+            block = get_block(provider, space_id)
+            if block:
+                return error_from_block(provider, config.model_key, block)
             return err.ProviderError(
                 provider=provider, model=config.model_key, category=err.BILLING,
                 message=f"Balance is {credits:g} credits.",

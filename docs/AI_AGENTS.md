@@ -76,6 +76,34 @@ KovAPI also accepts `background`, `output_format` and `style` but documents
 them as "not guaranteed to take effect; output is always PNG", and recommends
 against `n` — so none of them is offered.
 
+### APIMart (`https://api.apimart.ai`) — image generation only
+
+Asynchronous tasks: `POST /v1/images/generations` returns a task id, results are
+polled at `GET /v1/tasks/{id}` (or pushed to the webhook). Two documented model
+families:
+
+| Model | Parameters |
+|---|---|
+| GPT Image 2.5 Flare (`gpt-image-2.5-flare`) | quality (auto/low…max), resolution (`1k`/`2k`/`4k`, ratio canvases only), canvas (auto + 15 ratios incl. 2:1, 3:1, 9:21 + exact W×H), background, output format, moderation (low/auto); edits with up to 16 reference images |
+| GPT Image 2.5 Sunburst (`gpt-image-2.5-sunburst`) | same fields as Flare; favours editing precision |
+| GPT Image 2.5 Ext (`gpt-image-2.5-ext`) | version (Flare/Sunburst), resolution (`1K`/`2K`/`4K`), canvas (auto + 10 ratios, no exact sizes); up to 16 reference images |
+
+- Flare and Sunburst are billed by tokens: a 1024² image is about $0.006 at low,
+  $0.013 medium, $0.053 high, $0.094 xhigh and $0.21 max. **Quality "Auto"** (the
+  documented default) reserves funds at the Max price until the task settles —
+  choose High for a fixed, predictable cost. Ext is billed per image by version
+  and resolution.
+- An exact W×H follows the same limits as on APIDot/PoYo (multiples of 16, ≤ 3840,
+  ≤ 3:1, 655,360–8,294,400 px; above 2560×1440 is experimental) but the
+  resolution tier is simply ignored for it, and `auto` works at every tier.
+- References are uploaded to `POST /v1/uploads/images` (kept 72 h) and sent as URLs.
+- The webhook is a **base** URL: the bot sends `<server_host>/api/apimart` and
+  APIMart posts to `/api/apimart/callback` — public http(s) only, ports 80/443
+  recommended.
+- **The balance shown is this key's own quota** (`GET /v1/balance`), so a key
+  whose quota is used up is caught by the free Test connection and before a
+  batch; an unlimited key shows the account (`GET /v1/user/balance`).
+
 ## Things worth knowing
 
 - **You never pick the generation mode — the brief analysis does.** A contest
@@ -98,9 +126,10 @@ against `n` — so none of them is offered.
   2:3 frame and centre-crops it to the canvas, so the prompt for a wide or tall
   canvas gains a "keep everything central" line. Choose 2K or 4K for native
   ratios (6× / 10× the 1K price).
-- **References go where each provider can read them.** Kie.ai, APIDot and PoYo
-  get the contest's images through their own upload endpoints; KovAPI has none,
-  so references travel inside the request as compressed data URIs (≤ 1536 px).
+- **References go where each provider can read them.** Kie.ai, APIDot, PoYo and
+  APIMart get the contest's images through their own upload endpoints; KovAPI
+  has none, so references travel inside the request as compressed data URIs
+  (≤ 1536 px).
 - **Max output tokens is a ceiling.** Stages request what they need; the
   configured value caps them. Below ~3000 the brief-analysis JSON truncates.
 - **Temperature / reasoning effort apply to calls that don't pin their own.**
@@ -120,7 +149,8 @@ against `n` — so none of them is offered.
 - **Webhooks are optional and only sent to a reachable address.** With
   `server_host` set to a public URL, results arrive by webhook
   (`/api/kie-callback`, `/api/apidot-callback`, `/api/poyo-callback`,
-  `/api/kovapi-callback`); otherwise — or while `server_host` is the dev default
+  `/api/kovapi-callback`, `/api/apimart/callback`); otherwise — or while
+  `server_host` is the dev default
   `http://localhost:5000` — they are read by polling. PoYo only delivers to
   HTTPS, and KovAPI rejects a job whose callback is not a public address, so the
   bot leaves the field out rather than fail the job.
@@ -165,20 +195,22 @@ any AI call succeeds.
   provider and requeues blocked contests when it passes.
 - **Test Model** — spends a few credits. Sends one minimal real request
   ("Reply with exactly: APIDOT_OK") to the selected chat model and reports the
-  reply, latency and token usage. For PoYo and KovAPI, which serve images only,
-  it submits one real 1K, low-quality, square test image instead (KovAPI: one
-  credit, $0.005) and reports whether the job was accepted — the only check that
+  reply, latency and token usage. For PoYo, KovAPI and APIMart, which serve
+  images only here, it submits one real 1K, low-quality, square test image
+  instead (KovAPI: one credit, $0.005; APIMart Flare/Sunburst ≈ $0.006) and
+  reports whether the job was accepted — the only check that
   can see a key's own budget or cap. It refuses to run when the provider is
   already known to be out of credits, so it cannot waste a request proving the
   obvious.
 
 Every provider publishes a balance endpoint, so all show real credits: APIDot
 and PoYo via `/api/user/balance`, kie.ai via `/api/v1/chat/credit`, KovAPI via
-`/v1/usage` (`balance.credits`, 200 credits = $1).
+`/v1/usage` (`balance.credits`, 200 credits = $1), APIMart via `/v1/balance`
+(the key's own `remain_credits`; `/v1/user/balance` when the key is unlimited).
 
 Before a batch of contests is analysed, the image provider gets one real check
 so a capped key cannot cost a run of paid analyses: a one-token chat ping for
-kie.ai and APIDot, and for PoYo / KovAPI one test image — skipped whenever a
+kie.ai and APIDot, and for PoYo / KovAPI / APIMart one test image — skipped whenever a
 real image job succeeded in the last six hours.
 
 **KovAPI's 402 is ambiguous by design** — `insufficient_quota` covers an empty

@@ -20,7 +20,9 @@ Upload API:
 
 APIDot and PoYo share one upload contract (`POST /api/common/upload/stream`,
 multipart `file` + `upload_path` + `file_name` → `data.file_url`), so PoYo's
-uploader is APIDot's with its own host, key and rate limit. KovAPI has no
+uploader is APIDot's with its own host, key and rate limit. APIMart's
+`POST /v1/uploads/images` takes only the `file` part and answers with a
+top-level `url`. KovAPI has no
 upload endpoint at all: it accepts references inside the JSON body as a public
 URL, a data URI or raw base64, so `data_uri_for()` encodes them compactly.
 """
@@ -91,6 +93,12 @@ APIDOT_UPLOAD_PATH  = "contest-attachments"
 # PoYo documents the identical endpoint on its own host: images are kept 72 h
 # and the route allows 10 requests/minute.
 POYO_UPLOAD_URL     = "https://api.poyo.ai/api/common/upload/stream"
+
+# APIMart: multipart with a single `file` field → {"url", "filename",
+# "content_type", "bytes", "created_at"}; JPEG/PNG/WebP/GIF up to 20 MB, kept
+# 72 h. Its generation API takes reference URLs ("we no longer support passing
+# base64 image data directly in generation APIs").
+APIMART_UPLOAD_URL  = "https://api.apimart.ai/v1/uploads/images"
 
 # KovAPI references travel inside the JSON body (≤ 16 MB each, JPEG/PNG/WebP,
 # at most 8 per request). The generation model works at 1-2K internally, so a
@@ -209,12 +217,8 @@ class ApidotFileUploader:
                 name = storage_name(src)
                 with open(src, "rb") as fh:
                     files = {"file": (name, fh, _mime_for(src))}
-                    data = {
-                        "upload_path": APIDOT_UPLOAD_PATH,
-                        "file_name":   name,
-                    }
                     resp = self.session.post(
-                        self.URL, files=files, data=data,
+                        self.URL, files=files, data=self._form_data(name),
                         timeout=UPLOAD_TIMEOUT,
                     )
 
@@ -241,7 +245,7 @@ class ApidotFileUploader:
                         raise _PermanentUploadError(message)
                     raise RuntimeError(message)
 
-                file_url = (payload.get("data") or {}).get("file_url")
+                file_url = self._file_url(payload)
                 if not file_url:
                     raise RuntimeError(
                         f"{self.LABEL} upload returned no file_url: {payload}")
@@ -270,6 +274,16 @@ class ApidotFileUploader:
         )
 
 
+    # The two places the providers' upload contracts differ.
+    def _form_data(self, name: str) -> dict:
+        return {"upload_path": APIDOT_UPLOAD_PATH, "file_name": name}
+
+    @staticmethod
+    def _file_url(payload: dict):
+        data = payload.get("data")
+        return data.get("file_url") if isinstance(data, dict) else None
+
+
 class PoyoFileUploader(ApidotFileUploader):
     """PoYo's copy of the APIDot upload contract (its own host and key)."""
 
@@ -277,6 +291,26 @@ class PoyoFileUploader(ApidotFileUploader):
     URL = POYO_UPLOAD_URL
     KEY_SETTING = "poyo_api_key"
     RATE_NOTE = "10/min"
+
+
+class ApimartFileUploader(ApidotFileUploader):
+    """APIMart's POST /v1/uploads/images: a lone `file` part, a top-level `url`."""
+
+    LABEL = "APIMart"
+    URL = APIMART_UPLOAD_URL
+    KEY_SETTING = "apimart_api_key"
+    RATE_NOTE = "HTTP 429"
+
+    def _form_data(self, name: str) -> dict:
+        return {}
+
+    @staticmethod
+    def _file_url(payload: dict):
+        url = payload.get("url")
+        if isinstance(url, str) and url.startswith(("http://", "https://")):
+            return url
+        data = payload.get("data")
+        return data.get("url") if isinstance(data, dict) else None
 
 
 def data_uri_for(local_path: str, max_px: int = DATA_URI_MAX_PX,
