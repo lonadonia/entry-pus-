@@ -7,12 +7,20 @@ descriptions — calls `LLMClient.chat()`. Which provider and model that reaches
 is entirely a configuration question, answered by the AI Agents page through
 `bot/ai_config.py`; no caller names a model.
 
-Four wire shapes are supported, declared per model in `bot/ai_registry.py`:
+Six wire shapes are supported, declared per model in `bot/ai_registry.py`:
 
   openai_chat          POST {base}/v1/chat/completions
   openai_responses     POST {base}/v1/responses      (instructions + reasoning)
   anthropic_messages   POST {base}/v1/messages       (top-level system)
   kie_codex_responses  POST {base}/codex/v1/responses (input_text/input_image)
+  apimart_chat         POST {base}/v1/chat/completions (string content,
+                       stream:false, no response_format)
+  apimart_responses    POST {base}/v1/responses      (system/user input items,
+                       max_tokens, no instructions / reasoning)
+
+APIMart chat models are listed per key at run time and can be switched between
+protocols (`ActiveConfig.protocol`), so their transport comes from the model's
+`protocol` parameter rather than a fixed field.
 
 Request lifecycle
 -----------------
@@ -81,6 +89,35 @@ _DATA_URI_RE = re.compile(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", re.DOTA
 _JSON_NUDGE = (
     "\n\nReturn ONLY a single valid JSON object. No prose, no markdown fences."
 )
+
+# finish / stop reasons that mean "the token budget ran out" in the three
+# response shapes (Chat Completions, Responses, Messages).
+_TRUNCATED_FINISH = {"length", "max_tokens", "incomplete", "max_output_tokens"}
+
+
+def _maybe_billed(cfg, error) -> bool:
+    """
+    A READ timeout on a model that must not re-send after one (APIMart): the
+    request reached the provider, which may have finished — and billed — it
+    after we stopped waiting. Re-sending would pay twice for one answer.
+    """
+    return (error.category == err.TIMEOUT
+            and (error.details or {}).get("timeout_phase") == "read"
+            and cfg.model.get("retry_read_timeout") is False)
+
+
+def _finish_hint(body) -> Optional[str]:
+    """The finish / stop reason of a response, whatever its shape."""
+    if not isinstance(body, dict):
+        return None
+    inner = body.get("data") if isinstance(body.get("data"), dict) else body
+    choices = inner.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+        return choices[0].get("finish_reason")
+    details = inner.get("incomplete_details")
+    if isinstance(details, dict) and details.get("reason"):
+        return str(details["reason"])
+    return inner.get("stop_reason") or inner.get("status")
 
 
 def _is_degraded(model_key: str) -> bool:
@@ -276,6 +313,10 @@ class LLMClient:
                 # and the same key, so stop the chain immediately.
                 if not error.allows_model_failover:
                     raise
+                # A read timeout that may already have been served (and billed)
+                # is reported, not repeated on another model.
+                if _maybe_billed(cfg, error):
+                    raise
 
                 _mark_degraded(cfg.model_key)
                 if idx + 1 < len(order):
@@ -290,7 +331,13 @@ class LLMClient:
             retryable=False, scope=err.REQUEST))
 
     def _attempt_order(self) -> list:
-        """Primary config first, then the same-provider sibling when enabled."""
+        """
+        Primary config first, then at most one same-provider fallback:
+
+        * a registry model's declared sibling, when `auto_failover` is on, or
+        * the `fallback_model` the operator picked for a run-time-listed model
+          (APIMart) — explicit, off by default, never another provider.
+        """
         primary = self.config
         order = [primary]
 
@@ -300,6 +347,17 @@ class LLMClient:
             # Registry invariant, re-checked here: never cross providers.
             if sibling and sibling["provider"] == primary.provider:
                 order.append(ai_config.resolve(reg.CATEGORY_CHAT, fallback_key))
+
+        chosen = str(primary.params.get("fallback_model") or "").strip()
+        if chosen and len(order) == 1 and primary.model.get("dynamic"):
+            key = f"{primary.provider}:{chosen}"
+            if key != primary.model_key:
+                try:
+                    fallback = ai_config.resolve(reg.CATEGORY_CHAT, key)
+                except Exception:
+                    fallback = None          # e.g. no longer resolvable: no fallback
+                if fallback is not None and fallback.provider == primary.provider:
+                    order.append(fallback)
 
         if (len(order) == 2 and _is_degraded(order[0].model_key)
                 and not _is_degraded(order[1].model_key)):
@@ -353,6 +411,11 @@ class LLMClient:
 
                 if not error.retryable or attempt >= MAX_ATTEMPTS:
                     raise
+                if _maybe_billed(cfg, error):
+                    error.message = (f"{error.message} — not re-sent: the request "
+                                     f"reached the provider and may have "
+                                     f"completed (and been billed) upstream.")
+                    raise
                 time.sleep(_backoff(attempt, error.retry_after))
 
         raise err.ProviderCallError(last_error)
@@ -396,18 +459,29 @@ class LLMClient:
 
     def _filter_vision(self, cfg, user_content: Content, *, contest_id=None,
                        project_id=None) -> Content:
-        """Drop image parts for models whose provider doesn't document vision."""
+        """
+        Drop image parts for models whose provider doesn't document vision —
+        or whose chosen protocol doesn't (APIMart Chat Completions documents
+        string-only messages even for a Vision-tagged model).
+        """
         if not _has_images(user_content):
             return user_content
-        if cfg.model.get("capabilities", {}).get("vision"):
+        if cfg.supports_vision:
             return user_content
 
-        _log_throttled(
-            f"novision:{cfg.model_key}", "WARNING",
-            f"{cfg.label()} does not document image input — reference images "
-            f"were dropped and only the text of the brief was analysed. Pick a "
-            f"vision model on the AI Agents page to use them.",
-            contest_id=contest_id, project_id=project_id)
+        if cfg.model.get("capabilities", {}).get("vision") and cfg.protocol:
+            notice = (f"{cfg.label()} is set to {cfg.protocol['label']}, which "
+                      f"documents text-only messages — reference images were "
+                      f"dropped and only the text of the brief was analysed. "
+                      f"Switch the model's API protocol on the AI Agents page "
+                      f"to send them.")
+        else:
+            notice = (f"{cfg.label()} does not document image input — reference "
+                      f"images were dropped and only the text of the brief was "
+                      f"analysed. Pick a vision model on the AI Agents page to "
+                      f"use them.")
+        _log_throttled(f"novision:{cfg.model_key}:{cfg.transport}", "WARNING",
+                       notice, contest_id=contest_id, project_id=project_id)
         return [
             part for part in user_content
             if not (isinstance(part, dict) and part.get("type") == "image_url")
@@ -518,13 +592,63 @@ class LLMClient:
             temp = temperature if temperature is not None else params.get("temperature")
             if temp is not None:
                 payload["temperature"] = temp
-            if params.get("top_p") is not None:
+            if params.get("top_p") is not None and not self._default_top_p(cfg):
                 payload["top_p"] = params["top_p"]
             if params.get("top_k"):
                 payload["top_k"] = params["top_k"]
             stops = _split_csv(params.get("stop_sequences", ""))
+            if cfg.model.get("chat_rules") == reg.APIMART_CHAT_RULES:
+                stops = stops[:reg.APIMART_MAX_STOPS]
             if stops:
                 payload["stop_sequences"] = stops
+            return url, payload, minimal
+
+        if transport == "apimart_chat":
+            # APIMart Chat Completions documents messages[].content as a STRING
+            # (images go through Responses / Messages instead), no
+            # response_format, and two different `stream` defaults on two
+            # pages — so `stream: false` is always explicit.
+            if json_object:
+                system = system + _JSON_NUDGE
+            messages = [{"role": "system", "content": system},
+                        {"role": "user", "content": _text_of(user_content)}]
+            minimal = {"model": cfg.wire_model, "messages": messages,
+                       "max_tokens": max_tokens, "stream": False}
+            payload = dict(minimal)
+            temp = temperature if temperature is not None else params.get("temperature")
+            if temp is not None:
+                payload["temperature"] = temp
+            if params.get("top_p") is not None and not self._default_top_p(cfg):
+                payload["top_p"] = params["top_p"]
+            for key in ("frequency_penalty", "presence_penalty"):
+                if params.get(key):
+                    payload[key] = params[key]
+            stops = _split_csv(params.get("stop_sequences", ""))[:reg.APIMART_MAX_STOPS]
+            if stops:
+                payload["stop"] = stops
+            return url, payload, minimal
+
+        if transport == "apimart_responses":
+            # APIMart Responses: input items with role system / user and
+            # input_text / input_image blocks, `max_tokens` (its name, not
+            # max_output_tokens), stream false by default — no `instructions`
+            # and no `reasoning` field are documented, so neither is sent.
+            if json_object:
+                system = system + _JSON_NUDGE
+            items = [{"role": "system",
+                      "content": [{"type": "input_text", "text": system}]},
+                     {"role": "user", "content": self._responses_parts(user_content)}]
+            minimal = {"model": cfg.wire_model, "input": items,
+                       "max_tokens": max_tokens, "stream": False}
+            payload = dict(minimal)
+            temp = temperature if temperature is not None else params.get("temperature")
+            if temp is not None:
+                payload["temperature"] = temp
+            if params.get("top_p") is not None and not self._default_top_p(cfg):
+                payload["top_p"] = params["top_p"]
+            # tools=False is a caller's per-call veto, as on kie.ai.
+            if params.get("tools") == "web_search" and tools is not False:
+                payload["tools"] = [{"type": "web_search"}]
             return url, payload, minimal
 
         if transport == "kie_codex_responses":
@@ -564,6 +688,33 @@ class LLMClient:
         raise err.ProviderCallError(err.configuration_error(
             cfg.provider, f"No chat transport implemented for '{transport}'",
             cfg.model_key))
+
+    @staticmethod
+    def _default_top_p(cfg) -> bool:
+        """
+        APIMart models omit top_p while it sits at its documented default (1):
+        the docs recommend "either temperature or top_p, not both", and an
+        unchanged default says nothing the API does not already assume.
+        """
+        return (cfg.model.get("chat_rules") == reg.APIMART_CHAT_RULES
+                and cfg.params.get("top_p") in (None, 1, 1.0))
+
+    @staticmethod
+    def _responses_parts(user_content: Content) -> list:
+        """OpenAI-style parts → Responses input_text / input_image blocks."""
+        if isinstance(user_content, str):
+            return [{"type": "input_text", "text": user_content}]
+        parts = []
+        for part in user_content or []:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") == "text":
+                parts.append({"type": "input_text", "text": part.get("text", "")})
+            elif part.get("type") == "image_url":
+                image_url = (part.get("image_url") or {}).get("url", "")
+                if image_url:
+                    parts.append({"type": "input_image", "image_url": image_url})
+        return parts
 
     # ── One HTTP call ──────────────────────────────────────────────────────────
 
@@ -633,9 +784,10 @@ class LLMClient:
         transport = cfg.transport
         request_id = err.request_id_from(headers)
         try:
-            if transport == "openai_chat":
+            if transport in ("openai_chat", "apimart_chat"):
                 content, finish = self._parse_openai_chat(body)
-            elif transport in ("openai_responses", "kie_codex_responses"):
+            elif transport in ("openai_responses", "kie_codex_responses",
+                               "apimart_responses"):
                 content, finish = self._parse_responses(body)
             elif transport == "anthropic_messages":
                 content, finish = self._parse_anthropic(body)
@@ -650,7 +802,8 @@ class LLMClient:
                 cfg.provider, cfg.model_key, str(exc)[:200],
                 details={"top_level_keys": sorted(body.keys())[:12]
                          if isinstance(body, dict) else type(body).__name__,
-                         "http_status": http_status})) from exc
+                         "http_status": http_status,
+                         "finish_reason": _finish_hint(body)})) from exc
 
         if json_object:
             content = _strip_code_fence(content)
@@ -767,6 +920,8 @@ class LLMClient:
         """
         base = (f"llm provider={cfg.provider} model={cfg.wire_model} "
                 f"op={operation} attempt={attempt}/{MAX_ATTEMPTS}")
+        if cfg.protocol:
+            base += f" protocol={cfg.protocol['id']}"
         if contest_id:
             base += f" contest={contest_id}"
         if project_id:
@@ -800,47 +955,99 @@ class LLMClient:
         )
 
 
-def probe_model(provider: str, model_key: Optional[str] = None) -> dict:
+def probe_model(provider: str, model_key: Optional[str] = None,
+                params: Optional[dict] = None) -> dict:
     """
     Spend the smallest possible amount of credit to prove a model really works.
 
-    Returns {ok, message, model, category, latency_ms, usage}. Never raises.
-    Used by the explicit "Test Model" action — never by "Test Connection",
-    which must not cost anything.
-    """
-    models = reg.models_for(provider, reg.CATEGORY_CHAT)
-    if not models:
-        return {"ok": False, "message": "No chat model is registered for this provider.",
-                "model": None, "category": err.CONFIGURATION}
+    Returns {ok, message, model, category, latency_ms, usage, protocol}. Never
+    raises. Used by the explicit "Test Model" action — never by "Test
+    Connection", which must not cost anything.
 
-    chosen_key = model_key or ai_config.selected_model_key(reg.CATEGORY_CHAT)
-    chosen = next((m for m in models if m["key"] == chosen_key), models[0])
+    *model_key* names the model to test; it must belong to *provider* (a test
+    that quietly probed some other model would report the wrong thing). With
+    no key, the Space's selected chat model is tested when it is this
+    provider's, else the provider's first registered chat model. A provider
+    whose chat models are listed per key (APIMart) needs an explicit model or
+    a saved selection — there is no "first" model worth paying to test.
+
+    *params* (optional) are the page's unsaved draft: validated against the
+    model exactly as a save would, then used for this one probe, so "Test"
+    checks what is on screen — e.g. a protocol switch — before it is saved.
+    """
+    label = reg.provider_label(provider)
+    if model_key:
+        chosen = ai_config.lookup_model(model_key, reg.CATEGORY_CHAT)
+        if chosen is None or chosen["provider"] != provider:
+            return {"ok": False, "model": model_key, "category": err.CONFIGURATION,
+                    "message": f"'{model_key}' is not a {label} chat model."}
+    else:
+        selected = ai_config.lookup_model(
+            ai_config.selected_model_key(reg.CATEGORY_CHAT), reg.CATEGORY_CHAT)
+        registered = reg.models_for(provider, reg.CATEGORY_CHAT)
+        if selected is not None and selected["provider"] == provider:
+            chosen = selected
+        elif registered:
+            chosen = registered[0]
+        elif reg.has_dynamic_models(provider, reg.CATEGORY_CHAT):
+            return {"ok": False, "model": None, "category": err.CONFIGURATION,
+                    "message": f"Choose which {label} chat model to test."}
+        else:
+            return {"ok": False, "message": "No chat model is registered for this "
+                    "provider.", "model": None, "category": err.CONFIGURATION}
 
     started = time.time()
+    protocol = None
     try:
         client = LLMClient(chosen["key"])
+        if isinstance(params, dict):
+            client.config.params, _ = reg.validate_params(client.config.model, params)
         # A probe must report THIS model's health, not a sibling's.
-        client.config.params = dict(client.config.params, auto_failover=False)
+        client.config.params = dict(client.config.params, auto_failover=False,
+                                    fallback_model="")
+        protocol = (client.config.protocol or {}).get("label")
         result = client.ping()
+        via = f" via {protocol}" if protocol else ""
         return {
             "ok": True,
-            "message": f"{chosen['name']} replied “{result.content[:40]}” in "
+            "message": f"{chosen['name']} replied “{result.content[:40]}”{via} in "
                        f"{result.latency_ms} ms.",
             "model": chosen["key"],
             "latency_ms": result.latency_ms,
             "usage": result.usage,
             "category": None,
+            "protocol": protocol,
+            "request_id": result.request_id,
         }
     except err.ProviderCallError as exc:
+        error = exc.error
+        finish = str((error.details or {}).get("finish_reason") or "").lower()
+        latency = int((time.time() - started) * 1000)
+        if error.category == err.PARSING and finish in _TRUNCATED_FINISH:
+            # HTTP 200 and a well-formed answer whose 16-token probe budget went
+            # on reasoning before any visible text: key, balance, model and
+            # protocol all work. Real stages ask for thousands of tokens.
+            via = f" via {protocol}" if protocol else ""
+            return {
+                "ok": True,
+                "message": f"{chosen['name']} answered{via} (HTTP 200) but used "
+                           f"the whole 16-token probe budget before writing any "
+                           f"text (finish: {finish}) — the key, model and protocol "
+                           f"work; real stages request far larger budgets.",
+                "model": chosen["key"], "latency_ms": latency, "usage": {},
+                "category": None, "protocol": protocol, "truncated": True,
+            }
         return {
             "ok": False,
-            "message": exc.error.operator_message(),
-            "detail": exc.error.log_line(),
+            "message": error.operator_message(),
+            "detail": error.log_line(),
             "model": chosen["key"],
-            "category": exc.error.category,
-            "latency_ms": int((time.time() - started) * 1000),
+            "category": error.category,
+            "latency_ms": latency,
+            "protocol": protocol,
         }
     except Exception as exc:
-        return {"ok": False, "message": str(exc)[:300], "model": chosen["key"],
-                "category": err.CONFIGURATION,
-                "latency_ms": int((time.time() - started) * 1000)}
+        return {"ok": False, "message": err.redact(str(exc))[:300],
+                "model": chosen["key"], "category": err.CONFIGURATION,
+                "latency_ms": int((time.time() - started) * 1000),
+                "protocol": protocol}

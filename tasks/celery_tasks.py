@@ -328,11 +328,17 @@ def _ai_canary(category, space_id):
     A provider that serves only images (PoYo, KovAPI) has no chat model to
     ping: its canary is one real 1K image job, skipped while a real submission
     in the last few hours already proved the key works.
+
+    APIMart serves chat too, but only models its key lists at run time — and a
+    key may be restricted to image models, where a chat ping would fail and
+    wrongly stop the image provider. Its /v1/balance already reports the KEY's
+    own quota for free, so it keeps the image canary: only providers with a
+    REGISTERED chat model (`models_for`, not `serves`) get the chat ping.
     """
     try:
         from bot import ai_config, ai_errors, ai_health, ai_registry
         provider = ai_config.resolve(category).provider
-        if ai_registry.serves(provider, ai_registry.CATEGORY_CHAT):
+        if ai_registry.models_for(provider, ai_registry.CATEGORY_CHAT):
             from bot.llm import probe_model
             result = probe_model(provider)
         else:

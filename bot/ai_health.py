@@ -108,6 +108,13 @@ def _delete(key: str) -> None:
     _local.pop(key, None)
 
 
+# Public names for the same small cache, for modules that keep their own
+# short-lived data next to the health state (bot/apimart_catalog.py pricing).
+cache_get = _get
+cache_set = _set
+cache_delete = _delete
+
+
 def _space_id(explicit: Optional[int] = None) -> str:
     if explicit is not None:
         return str(explicit)
@@ -278,6 +285,7 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
     # show; -1 / unlimited_quota means the key has none, so the account is read.
     scope = meta.get("balance_scope", "account")
     fallback = meta.get("balance_fallback_endpoint")
+    key_data = data if scope == "key" else {}
     if (problem is None and fallback
             and (credits is None or credits < 0 or data.get("unlimited_quota") is True)):
         problem, body = _read_balance(provider, meta["base_url"].rstrip("/") + fallback,
@@ -305,6 +313,15 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
         "error": None,
         "cached": False,
     }
+    account = _account_details(data)
+    if key_data and key_data is not data:
+        # The account was read because the key itself is unlimited — keep that
+        # fact, it is what the operator needs to know about the key.
+        key_account = _account_details(key_data)
+        if "unlimited_quota" in key_account:
+            account["key_unlimited"] = key_account["unlimited_quota"]
+    if account:
+        entry["account"] = account
     _set(_balance_key(space_id, provider), entry, BALANCE_TTL)
 
     # A positive balance proves the account works — retire any stale billing
@@ -324,6 +341,25 @@ def fetch_balance(provider: str, api_key: Optional[str] = None,
             details={"billing_kind": err.KEY_LIMIT} if scope == "key" else {})
         block_provider(provider, error, space_id)
     return entry
+
+
+def _account_details(data: dict) -> dict:
+    """
+    The extra numbers a balance answer documents beyond the credit count —
+    APIMart's remain/used balance and credits and its unlimited-quota flag.
+    Units "depend on system configuration", so they are passed through
+    unlabelled rather than called dollars.
+    """
+    out = {}
+    if not isinstance(data, dict):
+        return out
+    for key in ("remain_balance", "used_balance", "remain_credits", "used_credits"):
+        value = data.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            out[key] = value
+    if isinstance(data.get("unlimited_quota"), bool):
+        out["unlimited_quota"] = data["unlimited_quota"]
+    return out
 
 
 def _read_balance(provider: str, url: str, api_key: str):
@@ -504,6 +540,11 @@ def provider_status(provider: str, space_id: Optional[int] = None,
     out["checked_at"] = info.get("checked_at")
     out["credits"] = info.get("credits")
     out["cached"] = bool(info.get("cached"))
+    # Where the number came from (APIMart's /v1/balance is the KEY's quota)
+    # and the provider's own account fields, so the page can label it.
+    out["scope"] = info.get("scope")
+    if info.get("account"):
+        out["account"] = info["account"]
 
     if block:
         out["blocked"] = {

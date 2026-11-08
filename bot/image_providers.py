@@ -1430,7 +1430,8 @@ def _probe_params(model: dict) -> dict:
     return out
 
 
-def probe_generation(provider: str, model_key: Optional[str] = None) -> dict:
+def probe_generation(provider: str, model_key: Optional[str] = None,
+                     params: Optional[dict] = None) -> dict:
     """
     "Test model" for an image-only provider: submit ONE real job at the
     cheapest documented settings (1K, low quality, square) and report whether
@@ -1451,6 +1452,10 @@ def probe_generation(provider: str, model_key: Optional[str] = None) -> dict:
               or models[0])
     try:
         cfg = ai_config.resolve(reg.CATEGORY_IMAGE, chosen["key"])
+        if isinstance(params, dict):
+            # The page's unsaved draft (e.g. another variant), validated as a
+            # save would — the cheapest tier/quality/canvas still win below.
+            cfg.params, _ = reg.validate_params(cfg.model, params)
         cfg.params = dict(cfg.params, **_probe_params(cfg.model))
         transport = transport_for(cfg)
         # Nobody waits for this job, so no webhook is registered for it.

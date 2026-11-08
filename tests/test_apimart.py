@@ -90,7 +90,11 @@ def test_apimart_is_an_image_provider_with_three_models():
     assert meta["balance_endpoint"] == "/v1/balance"
     assert meta["balance_fallback_endpoint"] == "/v1/user/balance"
     assert reg.serves("apimart", reg.CATEGORY_IMAGE)
-    assert not reg.serves("apimart", reg.CATEGORY_CHAT)
+    # Chat models are listed per key at run time (bot/apimart_catalog.py), so
+    # APIMart serves chat while registering no STATIC chat model — which is
+    # what keeps its pre-batch canary an image job.
+    assert reg.serves("apimart", reg.CATEGORY_CHAT)
+    assert not reg.models_for("apimart", reg.CATEGORY_CHAT)
     keys = [m["key"] for m in reg.models_for("apimart", reg.CATEGORY_IMAGE, selectable_only=True)]
     assert keys == [FLARE, SUNBURST, EXT]
     assert [reg.require_model(k)["wire_model"] for k in keys] == [

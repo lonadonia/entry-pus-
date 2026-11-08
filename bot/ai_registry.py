@@ -32,8 +32,17 @@ Sources (fetched 2026-09-17, image providers re-checked 2026-11-04):
   APIMart  https://docs.apimart.ai/en/api-reference/images/gpt-image-2.5/generation,
            …/gpt-image-2.5-ext/generation, …/tasks/status, …/tasks/webhook,
            …/uploads/images, …/account/token-balance, …/account/user-balance
-           (fetched 2026-11-05)
+           (fetched 2026-11-05); chat: …/models/list,
+           …/texts/general/chat-completions(-nostream), …/texts/general/claude-messages,
+           …/texts/openai/responses, …/texts/qwen3.8-max/pricing (fetched 2026-11-08)
+
+APIMart's CHAT models are not declared in MODELS: APIMart lists them per API
+key (`GET /v1/models`), so they are discovered at run time by
+`bot/apimart_catalog.py` and turned into ordinary model specs by
+`apimart_chat_spec()` below — same shape, same validation, same transports.
 """
+
+import re
 
 from typing import Any, Optional
 
@@ -122,8 +131,11 @@ PROVIDERS: dict[str, dict] = {
     "apimart": {
         "id": "apimart",
         "label": "APIMart",
-        "tagline": "GPT Image 2.5 Flare / Sunburst and the 2.5-ext line as async "
-                   "tasks — webhook or polling delivery.",
+        "tagline": "GPT and Claude chat models listed live for your key, plus "
+                   "GPT Image 2.5 Flare / Sunburst / 2.5-ext image tasks.",
+        # Chat models come from the key's own catalog (GET /v1/models), not
+        # from MODELS — see bot/apimart_catalog.py.
+        "dynamic_models": [CATEGORY_CHAT],
         "site": "https://apimart.ai/",
         "docs_url": "https://docs.apimart.ai/en/",
         "base_url": "https://api.apimart.ai",
@@ -407,6 +419,13 @@ def apply_constraints(model: dict, clean: dict) -> list[str]:
             clean["output_format"] = "png"
             notes.append("Output format set to PNG — a transparent background "
                          "needs PNG or WEBP")
+    if model.get("chat_rules") == APIMART_CHAT_RULES:
+        # Messages: "Maximum 4 sequences"; Chat Completions: "Up to 4 sequences".
+        stops = split_stop_sequences(clean.get("stop_sequences", ""))
+        if len(stops) > APIMART_MAX_STOPS:
+            clean["stop_sequences"] = ", ".join(stops[:APIMART_MAX_STOPS])
+            notes.append(f"Stop sequences: kept the first {APIMART_MAX_STOPS} — "
+                         f"APIMart accepts at most {APIMART_MAX_STOPS}")
     return notes
 
 
@@ -1138,21 +1157,33 @@ def selectable_equivalent(model_key: str) -> str:
 
 
 def providers_with(category: str) -> list[str]:
-    return [p for p in PROVIDER_IDS if models_for(p, category)]
+    return [p for p in PROVIDER_IDS
+            if models_for(p, category) or has_dynamic_models(p, category)]
 
 
 def serves(provider: str, category: str) -> bool:
-    """Does *provider* register any model for *category*?"""
-    return bool(models_for(provider, category))
+    """
+    Does *provider* offer any model for *category* — declared here, or listed
+    at run time from the key's own catalog (APIMart chat)?
+
+    Use `models_for()` when the question is "is there a STATIC model": the
+    pre-batch canary does, because a run-time catalog may not exist yet.
+    """
+    return bool(models_for(provider, category)) or has_dynamic_models(provider, category)
 
 
 def provider_label(provider: str) -> str:
     return (PROVIDERS.get(provider) or {}).get("label", provider)
 
 
-def default_params(model_key: str) -> dict:
-    """Every parameter of *model_key* at its documented default."""
-    model = require_model(model_key)
+def _spec(model) -> dict:
+    """A model spec dict, given either the spec itself or a static key."""
+    return model if isinstance(model, dict) else require_model(model)
+
+
+def default_params(model_key) -> dict:
+    """Every parameter of *model_key* (a key or a spec) at its documented default."""
+    model = _spec(model_key)
     return {
         p["key"]: p["default"]
         for p in model["params"]
@@ -1162,16 +1193,17 @@ def default_params(model_key: str) -> dict:
 
 # ── Validation ─────────────────────────────────────────────────────────────────
 
-def validate_params(model_key: str, raw: dict) -> tuple[dict, list[str]]:
+def validate_params(model_key, raw: dict) -> tuple[dict, list[str]]:
     """
     Coerce *raw* into the exact parameter set *model_key* documents.
 
-    Returns (clean, errors). Unknown keys are dropped, out-of-range numbers are
-    clamped (with a note), bad enum values fall back to the default. The result
-    is always safe to persist and to send — a malformed POST can never produce a
-    payload the provider will reject.
+    *model_key* is a static registry key or a spec dict (a run-time-listed
+    APIMart chat model). Returns (clean, errors). Unknown keys are dropped,
+    out-of-range numbers are clamped (with a note), bad enum values fall back
+    to the default. The result is always safe to persist and to send — a
+    malformed POST can never produce a payload the provider will reject.
     """
-    model = require_model(model_key)
+    model = _spec(model_key)
     raw = raw if isinstance(raw, dict) else {}
     clean: dict[str, Any] = {}
     errors: list[str] = []
@@ -1246,15 +1278,379 @@ def validate_params(model_key: str, raw: dict) -> tuple[dict, list[str]]:
     return clean, errors
 
 
-def merge_with_defaults(model_key: str, stored: dict) -> dict:
+def merge_with_defaults(model_key, stored: dict) -> dict:
     """Stored values on top of the documented defaults (missing keys filled in)."""
-    params = default_params(model_key)
-    clean, _ = validate_params(model_key, stored or {})
+    model = _spec(model_key)
+    params = default_params(model)
+    clean, _ = validate_params(model, stored or {})
     params.update(clean)
     return params
 
 
+# ── APIMart · chat (models discovered per key) ─────────────────────────────────
+# APIMart's chat catalog is per API KEY ("The returned models are controlled by
+# the API key's model restrictions and assigned group"), and chat models carry
+# no parameter schema ("parameter contracts currently cover image / video
+# only"). So the MODEL list is live (bot/apimart_catalog.py) while every
+# PARAMETER below comes from the three endpoint pages, verbatim:
+#
+#   Chat Completions  POST /v1/chat/completions — "supporting all text
+#       generation models"; messages[].content is documented as a STRING;
+#       temperature 0–2, top_p 0–1, max_tokens, frequency_penalty and
+#       presence_penalty −2…2, stop (up to 4), n. One page says `stream`
+#       defaults to false, its streaming twin says true — `stream: false` is
+#       always sent. Success may be wrapped as {"code":200,"data":{…}}.
+#   Responses         POST /v1/responses — input[] with role user / assistant /
+#       system and input_text / input_image blocks (URL or data URI),
+#       temperature 0–2, `max_tokens` (not max_output_tokens), top_p, stream
+#       (default false), tools [{"type":"web_search"}]. Lists gpt-5.2-pro,
+#       gpt-5.2-codex ("More models coming soon").
+#   Messages          POST /v1/messages — native Anthropic shape, no wrapper:
+#       top-level `system`, max_tokens REQUIRED, temperature 0–1, top_p, top_k,
+#       stop_sequences (max 4), stream (default false), image blocks (url or
+#       base64), assistant prefill. `thinking` is named but its fields are not
+#       defined on the page. Thinking blocks may appear in `content`.
+#
+# None of the three documents a reasoning-effort field or a JSON response
+# mode, so neither is ever sent: JSON is requested in the prompt (and, on
+# Messages, with a "{" prefill), exactly as for the other providers' models
+# that lack native JSON mode.
+
+APIMART_CHAT_RULES = "apimart_chat"
+APIMART_MAX_STOPS = 4
+
+APIMART_FAMILIES = {
+    "gpt": {"label": "GPT", "owner": "OpenAI"},
+    "claude": {"label": "Claude", "owner": "Anthropic"},
+}
+
+APIMART_DOCS = "https://docs.apimart.ai/en/api-reference/texts"
+APIMART_PROTOCOLS: dict[str, dict] = {
+    "chat_completions": {
+        "id": "chat_completions",
+        "label": "Chat Completions",
+        "transport": "apimart_chat",
+        "endpoint": "/v1/chat/completions",
+        # messages[].content is documented as a string only.
+        "vision": False,
+        "docs_url": f"{APIMART_DOCS}/general/chat-completions-nostream",
+    },
+    "responses": {
+        "id": "responses",
+        "label": "Responses",
+        "transport": "apimart_responses",
+        "endpoint": "/v1/responses",
+        "vision": True,                      # input_image: URL or data URI
+        "docs_url": f"{APIMART_DOCS}/openai/responses",
+    },
+    "messages": {
+        "id": "messages",
+        "label": "Messages (native Anthropic)",
+        "transport": "anthropic_messages",
+        "endpoint": "/v1/messages",
+        "vision": True,                      # image blocks: url or base64
+        "docs_url": f"{APIMART_DOCS}/general/claude-messages",
+    },
+}
+
+# Ids that share a family prefix but are not text-chat models.
+_APIMART_NOT_CHAT = re.compile(
+    r"image|embedding|tts|whisper|transcri|realtime|audio|moderation|dall-?e|sora",
+    re.I)
+_APIMART_RESPONSES_FIRST = re.compile(r"(^|[-.])pro($|[-.])|codex", re.I)
+
+
+def split_stop_sequences(value) -> list:
+    """Comma-separated operator input → the list a stop field takes."""
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def apimart_non_chat_id(model_id: str) -> bool:
+    """An image / embedding / audio / … model id, whatever its family prefix."""
+    return bool(_APIMART_NOT_CHAT.search(model_id or ""))
+
+
+def apimart_chat_family(model_id: str) -> Optional[str]:
+    """'gpt' / 'claude' for an id this integration can drive, else None."""
+    mid = (model_id or "").strip().lower()
+    if not mid or _APIMART_NOT_CHAT.search(mid):
+        return None
+    if mid.startswith("gpt-"):
+        return "gpt"
+    if mid.startswith("claude-"):
+        return "claude"
+    return None
+
+
+def apimart_protocols_for(family: str, model_id: str) -> tuple[list[str], str]:
+    """
+    (offered protocols, default protocol) for one model.
+
+    Claude: native Messages first (its own page, image blocks, prefill), Chat
+    Completions also lists every Claude id. GPT: Chat Completions lists the
+    GPT-5 line; the Responses page lists the -pro / -codex ids, which are
+    Responses-first. Responses is offered for the other GPT ids too, because
+    only it documents image input for GPT — Test model shows whether this key
+    can use it.
+    """
+    if family == "claude":
+        return ["messages", "chat_completions"], "messages"
+    default = ("responses" if _APIMART_RESPONSES_FIRST.search(model_id or "")
+               else "chat_completions")
+    return ["chat_completions", "responses"], default
+
+
+def _when(spec: dict, key: str, equals) -> dict:
+    out = dict(spec)
+    out["show_if"] = {"key": key, "equals": equals}
+    return out
+
+
+def _apimart_chat_params(family: str, protocols: list[str], default_protocol: str,
+                         *, max_output: Optional[int], model_id: str,
+                         catalog_ids) -> list[dict]:
+    protocol = _select(
+        "protocol", "API protocol",
+        [(p, APIMART_PROTOCOLS[p]["label"]) for p in protocols], default_protocol,
+        ("Which documented APIMart endpoint carries the request. "
+         + ("Messages is Anthropic's native shape (system prompt, image "
+            "blocks, JSON prefill); Chat Completions lists every Claude id too "
+            "but documents text-only messages."
+            if family == "claude" else
+            "Chat Completions lists the GPT-5 line and documents text-only "
+            "messages; Responses documents image input and web search and lists "
+            "gpt-5.2-pro / gpt-5.2-codex — for other ids, run Test model.")),
+    )
+    protocol["wire"] = None                  # chooses the endpoint; never sent
+
+    limit_note = (f" APIMart publishes {max_output:,} output tokens as this "
+                  f"model's limit." if max_output else
+                  " APIMart publishes no output limit for this model; the API "
+                  "enforces its own.")
+    params = [
+        protocol,
+        _number("max_tokens", "Max output tokens",
+                min(4096, max_output) if max_output else 4096,
+                "Hard ceiling applied to every call; each stage asks for what it "
+                "needs (brief analysis ~2500) and never more. Below ~3000 the "
+                "brief-analysis JSON truncates. Required by Messages." + limit_note,
+                minimum=1, maximum=max_output),
+    ]
+    if family == "claude":
+        params.append(_number(
+            "temperature", "Temperature", 1.0,
+            "Messages documents 0–1 (default 1); kept within 0–1 on both "
+            "protocols. Stages that pin their own value win.",
+            minimum=0, maximum=1, step=0.1, integer=False))
+    else:
+        params.append(_number(
+            "temperature", "Temperature", 1.0,
+            "Documented range 0–2, default 1. Stages that pin their own value "
+            "win. Some GPT-5 models only accept the default — a rejected value "
+            "is retried once without the optional fields.",
+            minimum=0, maximum=2, step=0.1, integer=False))
+    params.append(_number(
+        "top_p", "Top P", 1.0,
+        "Nucleus sampling, documented 0–1, default 1. Change this or "
+        "temperature, not both.",
+        minimum=0, maximum=1, step=0.05, integer=False, group="advanced"))
+
+    if family == "claude":
+        params.append(_when(_number(
+            "top_k", "Top K", 0,
+            "Sample from the K most likely tokens (Messages only). 0 leaves it "
+            "unset.", minimum=0, maximum=500, group="advanced"),
+            "protocol", "messages"))
+        params.append(_text(
+            "stop_sequences", "Stop sequences", "",
+            "Comma-separated strings that end generation early — at most 4. "
+            "Sent as stop_sequences (Messages) or stop (Chat Completions).",
+            group="advanced", placeholder="</done>, ###"))
+    else:
+        params.append(_when(_text(
+            "stop_sequences", "Stop sequences", "",
+            "Comma-separated strings that end generation early — at most 4 "
+            "(Chat Completions only; Responses documents none).",
+            group="advanced", placeholder="</done>, ###"),
+            "protocol", "chat_completions"))
+        for key, label, hint in (
+                ("frequency_penalty", "Frequency penalty",
+                 "Positive values discourage repeating the same words."),
+                ("presence_penalty", "Presence penalty",
+                 "Positive values encourage new topics.")):
+            params.append(_when(_number(
+                key, label, 0.0,
+                f"{hint} Documented −2 to 2, default 0 (Chat Completions only). "
+                f"0 is not sent.",
+                minimum=-2, maximum=2, step=0.1, integer=False, group="advanced"),
+                "protocol", "chat_completions"))
+        params.append(_when(_select(
+            "tools", "Tools", [("none", "None"), ("web_search", "Web search")],
+            "none",
+            "Responses only: lets the model search the web mid-answer (slower; "
+            "APIMart bills searches per call on top of tokens). Stages that "
+            "gain nothing from it — critique, rewrites — switch it off per "
+            "call.", group="advanced"),
+            "protocol", "responses"))
+
+    others = [mid for mid in catalog_ids if mid != model_id]
+    fallback = _select(
+        "fallback_model", "Fallback model",
+        [("", "None — report the failure")] + [(mid, mid) for mid in others], "",
+        "Optional, explicit and off by default: another APIMart model from "
+        "this key's list to try ONCE when this one fails after its retries "
+        "with a model-unavailable, server or network error. Never used for "
+        "billing, authentication or rate-limit errors (they hit every model "
+        "on the key), nor after a read timeout (the first request may have "
+        "completed and been billed).", group="advanced")
+    fallback["wire"] = None
+    params.append(fallback)
+
+    params.append(_unavailable(
+        "reasoning_effort", "Reasoning effort",
+        "APIMart documents no reasoning-effort field on Chat Completions, "
+        "Responses or Messages, so none is sent and the model uses its own "
+        "default."))
+    if family == "claude":
+        params.append(_unavailable(
+            "thinking", "Extended thinking",
+            "APIMart's Messages page names a `thinking` object but defines none "
+            "of its fields, so it is not sent rather than guessed."))
+    else:
+        params.append(_unavailable(
+            "n", "Completions per request (n)",
+            "Documented on Chat Completions, but the pipeline reads one "
+            "completion — n > 1 would bill extra answers that are discarded."))
+    params.extend([_SYSTEM_PREFIX, _stream_param()])
+    return params
+
+
+def apimart_chat_spec(model_id: str, record: Optional[dict] = None, *,
+                      catalog_ids=(), limits: Optional[dict] = None) -> Optional[dict]:
+    """
+    A full model spec for one APIMart chat model, in the same shape as MODELS.
+
+    *record* is the catalog entry (`bot/apimart_catalog.classify`): its
+    capability tags decide vision, and `listed` says whether the key's current
+    list still contains the id. *limits* are the published token limits from
+    the public pricing endpoint, when known. Returns None for an id outside the
+    GPT / Claude families.
+    """
+    family = (record or {}).get("family") or apimart_chat_family(model_id)
+    if family not in APIMART_FAMILIES:
+        return None
+    record = dict(record or {})
+    tags = [str(t) for t in record.get("tags") or []]
+    tagset = {t.lower() for t in tags}
+    protocols, default_protocol = apimart_protocols_for(family, model_id)
+    max_output = None
+    if isinstance(limits, dict):
+        try:
+            max_output = int(limits.get("max_output_tokens") or 0) or None
+        except (TypeError, ValueError):
+            max_output = None
+    default_meta = APIMART_PROTOCOLS[default_protocol]
+    vision = bool(tagset & {"vision", "omni"})
+    family_meta = APIMART_FAMILIES[family]
+    listed = bool(record.get("listed", True))
+
+    tagline = (f"{family_meta['label']} · listed by your APIMart key"
+               if listed else
+               f"{family_meta['label']} · NOT in your key's current APIMart list")
+    if tags:
+        tagline += " · " + ", ".join(tags)
+
+    return {
+        "key": f"apimart:{model_id}",
+        "provider": "apimart",
+        "category": CATEGORY_CHAT,
+        "name": model_id,
+        "family": family,
+        "tagline": tagline,
+        "wire_model": model_id,
+        "transport": default_meta["transport"],
+        "endpoint": default_meta["endpoint"],
+        "protocols": {p: APIMART_PROTOCOLS[p] for p in protocols},
+        "default_protocol": default_protocol,
+        "auth": "bearer",
+        "docs_url": default_meta["docs_url"],
+        # vision = the catalog tags the model Vision/Omni; whether images are
+        # actually sent also depends on the protocol (see ActiveConfig).
+        "capabilities": {"vision": vision, "json_mode": False, "reasoning": False,
+                         "tools": family == "gpt", "system_prompt": True},
+        "dynamic": True,
+        "catalog": {
+            "listed": listed,
+            "owned_by": record.get("owned_by") or "",
+            "tags": tags,
+            "endpoint_types": list(record.get("endpoint_types") or []),
+            "created": record.get("created"),
+        },
+        "limits": ({"max_output_tokens": max_output} if max_output else {}),
+        # A read timeout on a paid, non-streaming call may still have completed
+        # (and been billed) upstream — it is reported, never re-sent.
+        "retry_read_timeout": False,
+        "chat_rules": APIMART_CHAT_RULES,
+        "params": _apimart_chat_params(
+            family, protocols, default_protocol, max_output=max_output,
+            model_id=model_id, catalog_ids=list(catalog_ids or [])),
+    }
+
+
+def has_dynamic_models(provider: str, category: str) -> bool:
+    """Does *provider* list its *category* models at run time (per key)?"""
+    return category in (PROVIDERS.get(provider) or {}).get("dynamic_models", ())
+
+
+def dynamic_model_ref(model_key: str,
+                      category: str = CATEGORY_CHAT) -> Optional[tuple[str, str]]:
+    """
+    ('apimart', 'gpt-5') for a key naming a run-time-listed model, else None.
+
+    Static registry keys always win, so an image model id can never be read as
+    a chat model.
+    """
+    key = (model_key or "").strip()
+    if not key or key in MODELS_BY_KEY:
+        return None
+    provider, sep, model_id = key.partition(":")
+    if not sep or not model_id.strip() or not has_dynamic_models(provider, category):
+        return None
+    return provider, model_id.strip()
+
+
 # ── Serialisation for the frontend ─────────────────────────────────────────────
+
+def model_json(m: dict) -> dict:
+    """One model spec as the page consumes it (static or run-time listed)."""
+    out = {
+        "key": m["key"],
+        "provider": m["provider"],
+        "category": m["category"],
+        "name": m["name"],
+        "tagline": m["tagline"],
+        "wire_model": m["wire_model"],
+        "endpoint": m["endpoint"],
+        "docs_url": m["docs_url"],
+        "capabilities": m.get("capabilities", {}),
+        "requires_reference_images": m.get("requires_reference_images", False),
+        "selectable": m.get("selectable", True),
+        "sibling_i2i": m.get("sibling_i2i"),
+        "sibling_t2i": m.get("sibling_t2i"),
+        "fallback": m.get("fallback"),
+        "params": m["params"],
+    }
+    if m.get("dynamic"):
+        out.update({
+            "dynamic": True,
+            "family": m.get("family"),
+            "protocols": m.get("protocols", {}),
+            "default_protocol": m.get("default_protocol"),
+            "catalog": m.get("catalog", {}),
+            "limits": m.get("limits", {}),
+        })
+    return out
+
 
 def registry_json() -> dict:
     """The whole registry as plain JSON for the AI Agents page."""
@@ -1268,27 +1664,11 @@ def registry_json() -> dict:
             {**{k: v for k, v in provider.items() if k != "key_setting"},
              # Image-only providers have no chat model to ping, so the page
              # words their "Test model" as one real (cheap) image job.
-             "categories": [c for c in CATEGORIES if serves(provider["id"], c)]}
+             "categories": [c for c in CATEGORIES if serves(provider["id"], c)],
+             "dynamic_models": list(provider.get("dynamic_models", ()))}
             for provider in PROVIDERS.values()
         ],
-        "models": [
-            {
-                "key": m["key"],
-                "provider": m["provider"],
-                "category": m["category"],
-                "name": m["name"],
-                "tagline": m["tagline"],
-                "wire_model": m["wire_model"],
-                "endpoint": m["endpoint"],
-                "docs_url": m["docs_url"],
-                "capabilities": m.get("capabilities", {}),
-                "requires_reference_images": m.get("requires_reference_images", False),
-                "selectable": m.get("selectable", True),
-                "sibling_i2i": m.get("sibling_i2i"),
-                "sibling_t2i": m.get("sibling_t2i"),
-                "fallback": m.get("fallback"),
-                "params": m["params"],
-            }
-            for m in MODELS
-        ],
+        # Static models only; the AI Agents route appends the Space's
+        # run-time-listed APIMart chat models (they depend on its key).
+        "models": [model_json(m) for m in MODELS],
     }

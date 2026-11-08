@@ -7,8 +7,10 @@ runtime clients consume. Nothing else in `bot/` reads the raw settings keys.
 
 Settings owned here (all per-Space, all written only by /api/ai/*):
 
-    ai_chat_provider    "apidot" | "kie"  (the providers that serve chat)
-    ai_chat_model       registry key, e.g. "kie:gpt-5-5"
+    ai_chat_provider    "apidot" | "kie" | "apimart"  (the providers that serve chat)
+    ai_chat_model       registry key, e.g. "kie:gpt-5-5" — or "apimart:<model id>"
+                        for a model listed live by the Space's APIMart key
+                        (bot/apimart_catalog.py)
     ai_chat_params      JSON {model_key: {param: value}} — per model, so
                         switching back and forth keeps each model's tuning
     ai_image_provider   "apidot" | "kie" | "poyo" | "kovapi" | "apimart"
@@ -18,6 +20,7 @@ Settings owned here (all per-Space, all written only by /api/ai/*):
                         PoYo, KovAPI and APIMart use poyo_api_key /
                         kovapi_api_key / apimart_api_key)
     ai_provider_status  JSON {provider: {ok, message, checked_at}} — last test
+    apimart_chat_catalog JSON — the APIMart key's last chat-model listing
 
 The invariant the product is built on: **one provider per category**. The model
 key carries its provider, and `resolve()` refuses a mismatch rather than
@@ -53,6 +56,7 @@ _KEYS = {
 }
 
 STATUS_KEY = "ai_provider_status"
+CATALOG_KEY = "apimart_chat_catalog"      # bot/apimart_catalog.SNAPSHOT_KEY
 
 # Every settings key this module owns — app/routes/settings.py adds these to its
 # internal set so the generic settings form can never write them.
@@ -61,7 +65,7 @@ MANAGED_KEYS: set[str] = (
     | {spec["model"] for spec in _KEYS.values()}
     | {spec["params"] for spec in _KEYS.values()}
     | {p["key_setting"] for p in reg.PROVIDERS.values()}
-    | {STATUS_KEY}
+    | {STATUS_KEY, CATALOG_KEY}
 )
 
 
@@ -85,8 +89,30 @@ class ActiveConfig:
         return self.provider_meta["base_url"]
 
     @property
+    def protocol(self) -> Optional[dict]:
+        """
+        The wire protocol a multi-protocol model (APIMart chat) is set to use,
+        or None for a model with a single fixed transport.
+        """
+        protocols = self.model.get("protocols")
+        if not protocols:
+            return None
+        return (protocols.get(self.params.get("protocol"))
+                or protocols.get(self.model.get("default_protocol"))
+                or next(iter(protocols.values())))
+
+    @property
     def transport(self) -> str:
-        return self.model["transport"]
+        protocol = self.protocol
+        return protocol["transport"] if protocol else self.model["transport"]
+
+    @property
+    def supports_vision(self) -> bool:
+        """Does this model take images AND does the chosen protocol carry them?"""
+        if not self.model.get("capabilities", {}).get("vision"):
+            return False
+        protocol = self.protocol
+        return bool(protocol["vision"]) if protocol else True
 
     @property
     def wire_model(self) -> str:
@@ -97,7 +123,9 @@ class ActiveConfig:
         return self.model["wire_model"]
 
     def endpoint_url(self) -> str:
-        return self.base_url.rstrip("/") + self.model["endpoint"]
+        protocol = self.protocol
+        endpoint = protocol["endpoint"] if protocol else self.model["endpoint"]
+        return self.base_url.rstrip("/") + endpoint
 
     def label(self) -> str:
         return f"{self.provider_meta['label']} · {self.model['name']}"
@@ -114,6 +142,23 @@ def _load_json(key: str) -> dict:
         return {}
 
 
+def lookup_model(model_key: str, category: Optional[str] = None) -> Optional[dict]:
+    """
+    The spec for *model_key*: a static registry model, or a model the Space's
+    key lists at run time (APIMart chat). None when neither knows it.
+    """
+    model = reg.get_model(model_key)
+    if model is not None:
+        return model if category in (None, model["category"]) else None
+    ref = reg.dynamic_model_ref(model_key, category or reg.CATEGORY_CHAT)
+    if ref is None:
+        return None
+    from bot import apimart_catalog
+    if ref[0] == apimart_catalog.PROVIDER:
+        return apimart_catalog.model_spec(model_key)
+    return None
+
+
 def selected_model_key(category: str) -> str:
     """
     The configured model for *category*, falling back to the legacy single-key
@@ -122,9 +167,15 @@ def selected_model_key(category: str) -> str:
     The legacy fallback is what keeps an upgraded Space running: a Space that
     only ever set `llm_model=gpt-5-2` resolves to the mapped current model
     without anyone opening the new page.
+
+    A saved run-time-listed model (``apimart:<id>``) is returned as saved even
+    when the current listing no longer shows it — resolve() then reports the
+    real problem instead of this function quietly picking another provider.
     """
     spec = _KEYS[category]
     key = (get_setting(spec["model"], "") or "").strip()
+    if key and reg.dynamic_model_ref(key, category):
+        return key
     if key and reg.get_model(key):
         # Editing models are resolved by the pipeline, never chosen by hand, so
         # a Space saved on one (before they were hidden) resolves to the entry
@@ -145,9 +196,12 @@ def stored_params(category: str) -> dict:
     return _load_json(_KEYS[category]["params"])
 
 
-def params_for(category: str, model_key: str) -> dict:
+def params_for(category: str, model_key: str, model: Optional[dict] = None) -> dict:
     """Validated parameters for one model, defaults filled in."""
-    return reg.merge_with_defaults(model_key, stored_params(category).get(model_key, {}))
+    spec = model or lookup_model(model_key, category)
+    if spec is None:
+        return {}
+    return reg.merge_with_defaults(spec, stored_params(category).get(model_key, {}))
 
 
 def provider_api_key(provider: str) -> str:
@@ -173,7 +227,15 @@ def resolve(category: str, model_key: Optional[str] = None) -> ActiveConfig:
         raise ValueError(f"Unknown AI category '{category}'")
 
     key = model_key or selected_model_key(category)
-    model = reg.get_model(key)
+    model = lookup_model(key, category)
+    if model is None and reg.dynamic_model_ref(key, category):
+        # Never swap a chosen run-time model for the default — that would move
+        # the task to another provider without anyone deciding it. The wording
+        # contains "not configured" so the item fails instead of retrying.
+        raise RuntimeError(
+            f"The selected model '{key}' is not configured for this workspace — "
+            f"it cannot be resolved from the provider's model list. Choose a "
+            f"model again on the AI Agents page.")
     if model is None:
         model = reg.require_model(_KEYS[category]["default_model"])
 
@@ -192,7 +254,7 @@ def resolve(category: str, model_key: Optional[str] = None) -> ActiveConfig:
         provider=provider,
         provider_meta=meta,
         model=model,
-        params=params_for(category, model["key"]),
+        params=params_for(category, model["key"], model),
         api_key=api_key,
     )
 
@@ -209,7 +271,15 @@ def save_config(category: str, provider: str, model_key: str,
     """
     if category not in _KEYS:
         raise ValueError(f"Unknown AI category '{category}'")
-    model = reg.require_model(model_key)
+    model = lookup_model(model_key)
+    if model is None:
+        raise KeyError(f"Unknown AI model '{model_key}'")
+    if model.get("dynamic") and not model.get("catalog", {}).get("listed"):
+        # Catalog-verified: only an id the key's own listing shows may be saved.
+        raise ValueError(
+            f"'{model['name']}' is not in this key's current "
+            f"{reg.provider_label(model['provider'])} model list — refresh the "
+            f"list and pick one of the models it shows.")
     if model["category"] != category:
         raise ValueError(
             f"Model '{model_key}' is a {model['category']} model, not {category}"
@@ -220,13 +290,13 @@ def save_config(category: str, provider: str, model_key: str,
             "a category can only use one provider at a time."
         )
 
-    if not reg.is_selectable(model_key):
+    if not model.get("selectable", True):
         raise ValueError(
             f"Model '{model_key}' is selected automatically from the brief "
             f"analysis and cannot be chosen directly."
         )
 
-    clean, warnings = reg.validate_params(model_key, raw_params)
+    clean, warnings = reg.validate_params(model, raw_params)
 
     spec = _KEYS[category]
     blob = stored_params(category)
@@ -246,7 +316,12 @@ def save_provider_key(provider: str, api_key: str) -> None:
         raise ValueError(f"Unknown provider '{provider}'")
     save_setting(meta["key_setting"], (api_key or "").strip())
     # A new key invalidates every cached judgement about the old one: the
-    # circuit breaker and the balance reading both belonged to that credential.
+    # circuit breaker and the balance reading both belonged to that credential
+    # — and so did a per-key model listing (APIMart lists what the KEY may call).
+    if reg.has_dynamic_models(provider, reg.CATEGORY_CHAT):
+        from bot import apimart_catalog
+        if provider == apimart_catalog.PROVIDER:
+            apimart_catalog.clear_snapshot()
     from bot import ai_health
     ai_health.clear_block(provider)
     ai_health.invalidate_balance(provider)
@@ -275,13 +350,20 @@ def summary() -> dict:
     out = {"categories": {}, "providers": {}, "status": get_status()}
     for category in reg.CATEGORIES:
         model_key = selected_model_key(category)
-        model = reg.get_model(model_key)
+        model = lookup_model(model_key, category)
+        ref = reg.dynamic_model_ref(model_key, category)
         out["categories"][category] = {
-            "provider": model["provider"] if model else None,
+            "provider": (model["provider"] if model
+                         else (ref[0] if ref else None)),
             "model": model_key,
-            "params": params_for(category, model_key),
+            "params": params_for(category, model_key, model) if model else {},
             "all_params": stored_params(category),
             "configured": bool(model and has_api_key(model["provider"])),
+            # A run-time model the key's listing no longer shows still runs
+            # (the provider decides), but the page warns about it.
+            "listed": (bool(model.get("catalog", {}).get("listed"))
+                       if model and model.get("dynamic") else None),
+            "resolvable": model is not None,
         }
     for pid, meta in reg.PROVIDERS.items():
         key = provider_api_key(pid)

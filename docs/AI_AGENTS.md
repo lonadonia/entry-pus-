@@ -10,13 +10,34 @@ fields and a hard-coded model.
 one model. Models from different providers are never offered together, never
 combined, and never silently substituted for each other.
 
-The flow is always:
+The page has four views (bookmarkable: `#overview`, `#tasks/chat`,
+`#tasks/image`, `#providers`, `#activity`):
 
-```
-Provider  →  Category  →  Model  →  Model configuration
-```
+- **Overview** — each task's provider, model, endpoint/protocol, key parameters
+  and last test, plus a provider health table.
+- **AI Tasks** — the configuration flow, one step per section:
 
-Nothing below a step is shown until that step is answered.
+  ```
+  Task  →  Provider  →  Model  →  Parameters  →  Test  →  Save
+  ```
+
+  The model list is searchable (and filterable by family / vision when there
+  are many). Parameters show the basic ones first; *Advanced settings* is
+  collapsed and also lists the documented-but-not-sent parameters with the
+  reason. Values are range-checked as you type, the save bar always says
+  whether there are unsaved changes, and leaving the page with unsaved changes
+  asks first. **Test** runs what is on screen — including unsaved changes — so
+  you can try a setting before keeping it.
+- **Providers** — one card per provider: the key (only its last four characters
+  are ever shown), Replace / Remove (Remove asks for confirmation), Test
+  connection (free), Test model (paid), balance and the last check.
+- **Activity** — the per-attempt AI call records, tests and configuration
+  changes for this workspace (secrets are masked; prompts are never logged),
+  and the circuit-breaker state per provider.
+
+**Status colours are earned.** A provider or task is green only after a check
+actually passed — a live balance read, or the last Test connection / Test model.
+A key that is saved but untested reads *Not verified*, never *Ready*.
 
 ## The two categories
 
@@ -76,7 +97,58 @@ KovAPI also accepts `background`, `output_format` and `style` but documents
 them as "not guaranteed to take effect; output is always PNG", and recommends
 against `n` — so none of them is offered.
 
-### APIMart (`https://api.apimart.ai`) — image generation only
+### APIMart (`https://api.apimart.ai`) — GPT / Claude chat and image generation
+
+#### Chat (models listed live for your key)
+
+APIMart's chat catalogue is **per API key** (the key's model restrictions and
+group decide it) and publishes no per-model parameter schema, so the bot does
+not ship a fixed APIMart chat-model list. Instead:
+
+- **The model list comes from your key**: `GET /v1/models?expand=category&category=chat`
+  — free, run by *Load models / Refresh list*, by **Test connection**, and once
+  automatically when you open APIMart in the chat task with no list yet. Only
+  GPT (`gpt-…`) and Claude (`claude-…`) chat models are offered; image,
+  embedding and audio models are never shown as chat models, and other chat
+  families (e.g. Gemini) are counted as "listed but not offered". The list is
+  stored per workspace, tied to the key that produced it (replacing or
+  removing the key clears it), and shown as *stale* after 6 hours.
+- **Only a model your key lists can be saved.** If a later refresh no longer
+  lists the saved model, it keeps running unchanged (the provider decides) and
+  the page warns that it is no longer in the key's list — it is never swapped
+  for another model or provider.
+- **Three documented protocols** — the *API protocol* parameter decides the
+  endpoint:
+
+  | Protocol | Endpoint | Offered for | Images |
+  |---|---|---|---|
+  | Chat Completions | `POST /v1/chat/completions` | GPT (default) and Claude | **no** — content is documented as a string |
+  | Responses | `POST /v1/responses` | GPT (default for `-pro` / `codex` ids) | yes (`input_image`) |
+  | Messages (native Anthropic) | `POST /v1/messages` | Claude (default) | yes (image blocks) |
+
+  A Vision-tagged model on Chat Completions has the contest's reference images
+  dropped with a notice — switch the protocol to send them.
+- **Parameters** (only what those pages define): max output tokens (bounded by
+  the published limit when APIMart publishes one), temperature (GPT 0–2,
+  Claude 0–1), top P (sent only when changed from 1), Claude top K (Messages),
+  stop sequences (≤ 4), GPT frequency / presence penalty (Chat Completions;
+  0 is not sent), GPT web search (Responses), a system-prompt prefix. Reasoning
+  effort, Claude `thinking` and `n` are listed as *not sent* with the reason.
+  `stream` is always `false`.
+- **Fallback model** — optional, off by default: another model from the same
+  key's list, tried **once** after the chosen model fails with a
+  model-unavailable / server / network error. Never for billing, key or
+  rate-limit errors, never another provider.
+- **A read timeout is never re-sent.** Once a request has reached APIMart, a
+  timeout may still have completed — and been billed — upstream, so it is
+  reported instead of retried or failed over. A connection timeout (nothing
+  was sent) is retried as usual.
+- **Prices** in the model list are APIMart's public effective rates per 1M
+  tokens (`GET https://api.apimart.ai/api/pricing/model?model=<id>`, no key
+  sent, cached 6 h). A model with no published pricing says so — it is never
+  shown as free. Your account's actual rate may differ.
+
+#### Images
 
 Asynchronous tasks: `POST /v1/images/generations` returns a task id, results are
 polled at `GET /v1/tasks/{id}` (or pushed to the webhook). Two documented model
@@ -190,9 +262,10 @@ any AI call succeeds.
 ## Test Connection vs Test Model
 
 - **Test Connection** — free. Checks authentication and reads the credit
-  balance (`GET /api/user/balance`), plus the media status endpoint. Use it
-  freely; it never runs a generation. It also unblocks a previously blocked
-  provider and requeues blocked contests when it passes.
+  balance (`GET /api/user/balance`), plus the media status endpoint — and for
+  APIMart refreshes the key's chat-model list. Use it freely; it never runs a
+  generation. It also unblocks a previously blocked provider and requeues
+  blocked contests when it passes.
 - **Test Model** — spends a few credits. Sends one minimal real request
   ("Reply with exactly: APIDOT_OK") to the selected chat model and reports the
   reply, latency and token usage. For PoYo, KovAPI and APIMart, which serve
@@ -202,6 +275,14 @@ any AI call succeeds.
   can see a key's own budget or cap. It refuses to run when the provider is
   already known to be out of credits, so it cannot waste a request proving the
   obvious.
+  - On the **AI Tasks** page it tests the task's chosen model with the
+    parameters on screen (saved or not). On a **Providers** card it tests the
+    model this workspace uses: for APIMart that is the chat model when APIMart
+    is the chat provider, otherwise one test image.
+  - A reasoning model that spends the whole 16-token probe on reasoning
+    before writing any text is reported as working (HTTP 200, the key, model
+    and protocol all answered) with that explanation — real stages request
+    thousands of tokens.
 
 Every provider publishes a balance endpoint, so all show real credits: APIDot
 and PoYo via `/api/user/balance`, kie.ai via `/api/v1/chat/credit`, KovAPI via
@@ -239,7 +320,10 @@ keeps those legacy keys mirrored.
 
 ## Adding a model or provider
 
-Edit `bot/ai_registry.py` — one dict in `MODELS` with its parameter specs. The
+Edit `bot/ai_registry.py` — one dict in `MODELS` with its parameter specs.
+(APIMart's chat models are the exception: they come from the key's own list at
+run time — `bot/apimart_catalog.py` + `ai_registry.apimart_chat_spec()` — so a
+new GPT or Claude id on APIMart needs no code change.) The
 page, the save validation and the wire payload all follow. A genuinely new wire
 shape also needs a transport: a branch in `LLMClient._build` + `_parse` (chat)
 or a class in `bot/image_providers.py` (image). `tests/test_ai_registry.py` enforces the

@@ -5,926 +5,1766 @@
 
 {% block head %}
 <style>
-  /* ── Cards ──────────────────────────────────────────────────────────────── */
-  .ai-card {
-    background: #12141f;
-    border: 1px solid #1e2030;
-    border-radius: .875rem;
-    overflow: hidden;
+  /* ═══ AI Agents console — scoped design tokens ═══════════════════════════════
+     Built on the app palette (base.html): bg #0a0c14, surface #12141f, border
+     #1e2030, accent #4f6ef7. Secondary text is #a3aec2 / tertiary #7c879b, both
+     ≥ 4.5:1 on the surface colour (the app's #64748b is 3.9:1 on #12141f). */
+  .aa {
+    --bg: #0a0c14; --surface: #12141f; --surface-2: #151826; --raised: #1a1e2e;
+    --line: #1e2030; --line-2: #2a2f47;
+    --text: #e2e8f0; --text-2: #a3aec2; --text-3: #7c879b;
+    --accent: #4f6ef7; --accent-2: #8ba2ff; --accent-soft: rgba(79,110,247,.12);
+    --ok: #22c55e; --ok-soft: rgba(34,197,94,.12);
+    --warn: #f59e0b; --warn-soft: rgba(245,158,11,.12);
+    --bad: #ef4444; --bad-soft: rgba(239,68,68,.12);
+    --r-lg: 14px; --r-md: 10px; --r-sm: 8px;
+    max-width: 76rem; margin: 0 auto; color: var(--text);
+    font-size: 13px; line-height: 1.5;
   }
-  .ai-card-header {
-    display: flex; align-items: flex-start; justify-content: space-between;
-    gap: 1rem; padding: 1rem 1.25rem;
-    border-bottom: 1px solid #1e2030;
-    background: linear-gradient(180deg, rgba(255,255,255,.02), transparent);
+  .aa *:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+  /* <main> is the scroll container: keep focused / scrolled-to fields clear of the sticky save bar. */
+  main { scroll-padding-bottom: 96px; }
+  .aa .muted { color: var(--text-2); }
+  .aa .faint { color: var(--text-3); }
+  .aa code, .aa .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .aa code.tag {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 1px 6px; font-size: 11px; color: var(--text-2); white-space: nowrap;
   }
-  .ai-card-body { padding: 1.25rem; }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+             overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
-  /* ── Selectable tiles (providers + models) ──────────────────────────────── */
-  .tile {
-    position: relative; text-align: left; width: 100%;
-    background: #0a0c14; border: 1px solid #1e2030; border-radius: .75rem;
-    padding: .9rem 1rem; cursor: pointer;
-    transition: border-color .15s, background .15s, transform .15s;
-  }
-  .tile:hover:not(.tile-disabled) { border-color: #2c3050; transform: translateY(-1px); }
-  .tile.selected {
-    border-color: #4f6ef7;
-    background: linear-gradient(180deg, rgba(79,110,247,.12), rgba(79,110,247,.04));
-    box-shadow: 0 0 0 1px rgba(79,110,247,.35);
-  }
-  .tile.selected::after {
-    content: ''; position: absolute; top: .75rem; right: .75rem;
-    width: .5rem; height: .5rem; border-radius: 99px; background: #4f6ef7;
-  }
-  .tile-disabled { opacity: .45; cursor: not-allowed; }
+  /* ── Header ── */
+  .aa-head { display: flex; align-items: flex-end; justify-content: space-between;
+             gap: 16px; flex-wrap: wrap; margin-bottom: 18px; }
+  .aa-head p.lead { color: var(--text-2); max-width: 46rem; font-size: 13px; }
+  .aa-head .eyebrow { font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+                      color: var(--accent-2); font-weight: 600; margin-bottom: 4px; }
+  .aa-stats { display: flex; gap: 8px; flex-wrap: wrap; }
+  .aa-stat { display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+             border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+             font-size: 12px; color: var(--text-2); }
+  .aa-stat b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 
-  /* ── Step scaffolding ───────────────────────────────────────────────────── */
-  .step { padding: 1.1rem 0; border-top: 1px dashed #1e2030; }
-  .step:first-child { border-top: none; padding-top: .25rem; }
-  .step-locked { opacity: .4; pointer-events: none; filter: saturate(.4); }
-  .step-num {
-    width: 1.35rem; height: 1.35rem; border-radius: 99px;
-    background: #1e2030; color: #94a3b8;
-    font-size: .7rem; font-weight: 600;
-    display: inline-flex; align-items: center; justify-content: center;
-  }
-  .step-done .step-num { background: rgba(79,110,247,.2); color: #4f6ef7; }
-
-  /* ── Chips & pills ──────────────────────────────────────────────────────── */
-  .chip {
-    display: inline-flex; align-items: center; gap: .25rem;
-    padding: .1rem .45rem; border-radius: .375rem;
-    font-size: .65rem; font-weight: 500; letter-spacing: .01em;
-    background: rgba(255,255,255,.05); color: #94a3b8;
-    border: 1px solid rgba(255,255,255,.06);
-  }
-  .chip-on { background: rgba(79,110,247,.14); color: #8ba2ff; border-color: rgba(79,110,247,.25); }
-  .pill {
-    display: inline-flex; align-items: center; gap: .4rem;
-    padding: .2rem .6rem; border-radius: 99px;
-    font-size: .7rem; font-weight: 500;
-  }
-  .pill-ok   { background: rgba(34,197,94,.12);  color: #22c55e; }
-  .pill-bad  { background: rgba(239,68,68,.12);  color: #ef4444; }
-  .pill-idle { background: rgba(100,116,139,.15); color: #94a3b8; }
-  .pill-warn { background: rgba(245,158,11,.12); color: #f59e0b; }
-
-  /* ── Parameter rows ─────────────────────────────────────────────────────── */
-  .param-row {
-    display: grid; grid-template-columns: minmax(0,1fr) 17rem;
-    gap: 1rem; align-items: center;
-    padding: .85rem 0; border-bottom: 1px solid #16182600;
-    border-bottom-color: #181a28;
-  }
-  .param-row:last-child { border-bottom: none; }
-  @media (max-width: 800px) {
-    .param-row { grid-template-columns: 1fr; gap: .5rem; }
-  }
-  .ai-input {
-    width: 100%; background: #0a0c14; border: 1px solid #1e2030;
-    border-radius: .5rem; padding: .5rem .7rem;
-    font-size: .8rem; color: #e2e8f0;
-  }
-  .ai-input:disabled { opacity: .5; cursor: not-allowed; }
-
-  /* ── Toggle ─────────────────────────────────────────────────────────────── */
-  .toggle {
-    position: relative; width: 2.4rem; height: 1.35rem; border-radius: 99px;
-    background: #1e2030; border: 1px solid #262a3d; cursor: pointer;
-    transition: background .15s; flex-shrink: 0;
-  }
-  .toggle::after {
-    content: ''; position: absolute; top: 2px; left: 2px;
-    width: 1.05rem; height: 1.05rem; border-radius: 99px;
-    background: #64748b; transition: transform .15s, background .15s;
-  }
-  .toggle.on { background: rgba(79,110,247,.3); border-color: #4f6ef7; }
-  .toggle.on::after { transform: translateX(1.02rem); background: #4f6ef7; }
-  .toggle:disabled { opacity: .4; cursor: not-allowed; }
-
-  /* ── Tooltip ────────────────────────────────────────────────────────────── */
-  .tip { position: relative; display: inline-flex; }
-  .tip > .tip-body {
-    visibility: hidden; opacity: 0; position: absolute; z-index: 40;
-    bottom: 140%; left: 50%; transform: translateX(-50%);
-    width: 17rem; padding: .55rem .7rem;
-    background: #0a0c14; border: 1px solid #2c3050; border-radius: .5rem;
-    font-size: .7rem; line-height: 1.45; color: #cbd5e1; font-weight: 400;
-    box-shadow: 0 10px 30px rgba(0,0,0,.55); transition: opacity .12s;
-    white-space: normal; text-align: left; pointer-events: none;
-  }
-  .tip:hover > .tip-body { visibility: visible; opacity: 1; }
-
-  /* ── Buttons ────────────────────────────────────────────────────────────── */
-  .btn {
-    display: inline-flex; align-items: center; justify-content: center; gap: .4rem;
-    padding: .5rem .9rem; border-radius: .5rem;
-    font-size: .78rem; font-weight: 500; transition: all .15s; cursor: pointer;
-    border: 1px solid transparent; white-space: nowrap;
-  }
-  .btn-primary { background: #4f6ef7; color: #fff; }
-  .btn-primary:hover:not(:disabled) { background: #4260e8; }
-  .btn-ghost { background: transparent; border-color: #1e2030; color: #94a3b8; }
-  .btn-ghost:hover:not(:disabled) { border-color: #2c3050; color: #e2e8f0; }
-  .btn:disabled { opacity: .5; cursor: not-allowed; }
-
-  /* ── Save bar ───────────────────────────────────────────────────────────── */
-  .save-bar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 1rem; flex-wrap: wrap;
-    padding: .85rem 1.25rem; border-top: 1px solid #1e2030;
-    background: rgba(79,110,247,.05);
+  /* ── Tabs ── */
+  .aa-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line);
+             margin-bottom: 20px; overflow-x: auto; scrollbar-width: none; }
+  .aa-tabs::-webkit-scrollbar { display: none; }
+  .aa-tab { position: relative; display: inline-flex; align-items: center; gap: 8px;
+            padding: 10px 14px; font-size: 13px; font-weight: 500; color: var(--text-2);
+            white-space: nowrap; background: none; border: none; cursor: pointer;
+            transition: color .15s; }
+  .aa-tab:hover { color: var(--text); }
+  .aa-tab[aria-selected="true"] { color: var(--text); }
+  .aa-tab[aria-selected="true"]::after { content: ''; position: absolute; left: 10px; right: 10px;
+            bottom: -1px; height: 2px; border-radius: 2px; background: var(--accent); }
+  .aa-tab .count { font-size: 11px; padding: 0 6px; border-radius: 999px;
+                   background: var(--raised); color: var(--text-2); }
+  .aa-tab .count.bad { background: var(--bad-soft); color: #fca5a5; }
+  @media (max-width: 480px) {
+    .aa-tab { padding: 10px 10px; gap: 6px; }
+    .aa-tab > svg { display: none; }
   }
 
-  .skeleton {
-    background: linear-gradient(90deg, #12141f 25%, #191c2b 50%, #12141f 75%);
-    background-size: 200% 100%; animation: shimmer 1.4s infinite;
-    border-radius: .5rem;
-  }
-  @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  /* ── Cards ── */
+  .aa-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg);
+             box-shadow: 0 1px 0 rgba(255,255,255,.03) inset, 0 8px 24px rgba(0,0,0,.18); }
+  .aa-card-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+               padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  .aa-card-b { padding: 16px 18px; }
+  .aa-h2 { font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: -.005em; }
+  .aa-h3 { font-size: 13px; font-weight: 600; color: var(--text); }
+  .aa-label { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+              color: var(--text-3); }
+  .aa-grid-2 { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .aa-grid-3 { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  @media (max-width: 1100px) { .aa-grid-3 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 860px)  { .aa-grid-2, .aa-grid-3 { grid-template-columns: minmax(0, 1fr); } }
 
-  code.inline {
-    background: #0a0c14; border: 1px solid #1e2030; border-radius: .3rem;
-    padding: .05rem .3rem; font-size: .68rem; color: #94a3b8;
+  /* ── Buttons ── */
+  .aa-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+            height: 34px; padding: 0 13px; border-radius: var(--r-sm); font-size: 12.5px;
+            font-weight: 500; border: 1px solid transparent; cursor: pointer; white-space: nowrap;
+            transition: background .15s, border-color .15s, color .15s, opacity .15s; }
+  .aa-btn svg { width: 14px; height: 14px; }
+  .aa-btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+  .aa-btn-primary { background: var(--accent); color: #fff; }
+  .aa-btn-primary:hover:not(:disabled) { background: #4260e8; }
+  .aa-btn-secondary { background: var(--raised); border-color: var(--line-2); color: var(--text); }
+  .aa-btn-secondary:hover:not(:disabled) { border-color: #3a4163; }
+  .aa-btn-ghost { background: transparent; border-color: var(--line); color: var(--text-2); }
+  .aa-btn-ghost:hover:not(:disabled) { color: var(--text); border-color: var(--line-2); }
+  .aa-btn-danger { background: transparent; border-color: rgba(239,68,68,.3); color: #fca5a5; }
+  .aa-btn-danger:hover:not(:disabled) { background: var(--bad-soft); }
+  .aa-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .aa-link { color: var(--accent-2); text-decoration: none; display: inline-flex;
+             align-items: center; gap: 4px; font-size: 12px; background: none; border: 0;
+             cursor: pointer; padding: 0; }
+  .aa-link:hover { text-decoration: underline; }
+  .aa-link svg { width: 12px; height: 12px; }
+
+  /* ── Status pills & chips ── */
+  .pill { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px;
+          border-radius: 999px; font-size: 11.5px; font-weight: 500; white-space: nowrap;
+          border: 1px solid transparent; }
+  .pill::before { content: ''; width: 6px; height: 6px; border-radius: 99px; background: currentColor; }
+  .pill.ok   { background: var(--ok-soft);   color: #4ade80; border-color: rgba(34,197,94,.22); }
+  .pill.warn { background: var(--warn-soft); color: #fbbf24; border-color: rgba(245,158,11,.22); }
+  .pill.bad  { background: var(--bad-soft);  color: #fca5a5; border-color: rgba(239,68,68,.25); }
+  .pill.idle { background: rgba(148,163,184,.08); color: var(--text-2); border-color: var(--line-2); }
+  .pill.info { background: var(--accent-soft); color: var(--accent-2); border-color: rgba(79,110,247,.25); }
+  .chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px;
+          border-radius: 6px; font-size: 11px; color: var(--text-2); background: rgba(255,255,255,.04);
+          border: 1px solid rgba(255,255,255,.06); white-space: nowrap; }
+  .chip.on { color: var(--accent-2); background: var(--accent-soft); border-color: rgba(79,110,247,.22); }
+  .chip.warn { color: #fbbf24; background: var(--warn-soft); border-color: rgba(245,158,11,.2); }
+  .dot { width: 9px; height: 9px; border-radius: 99px; flex-shrink: 0; display: inline-block; }
+  /* Long values (a parameter summary, a dated model id) wrap instead of
+     pushing the page sideways on a phone. */
+  .chip.wrap { white-space: normal; height: auto; min-height: 20px; padding: 2px 7px;
+               line-height: 1.35; overflow-wrap: anywhere; }
+  .md .v code.tag, .task-card dd code.tag { white-space: normal; overflow-wrap: break-word; }
+
+  /* ── Overview ── */
+  .task-card .row { display: grid; grid-template-columns: 110px minmax(0,1fr); gap: 10px;
+                    padding: 8px 0; border-top: 1px solid var(--line); align-items: center; }
+  .task-card .row:first-child { border-top: none; }
+  .task-card .row > dt { font-size: 12px; color: var(--text-3); }
+  .task-card .row > dd { min-width: 0; color: var(--text); font-size: 12.5px; }
+  .ph-table { width: 100%; border-collapse: collapse; }
+  .ph-table th { text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .06em;
+                 text-transform: uppercase; color: var(--text-3); padding: 10px 18px;
+                 border-bottom: 1px solid var(--line); }
+  .ph-table td { padding: 12px 18px; border-bottom: 1px solid var(--line); vertical-align: middle;
+                 font-size: 12.5px; }
+  .ph-table tr:last-child td { border-bottom: none; }
+  .ph-table tr.clickable { cursor: pointer; transition: background .12s; }
+  .ph-table tr.clickable:hover { background: rgba(255,255,255,.02); }
+  @media (max-width: 760px) {
+    .ph-table thead { display: none; }
+    .ph-table tr { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px;
+                   padding: 12px 16px; border-bottom: 1px solid var(--line); }
+    .ph-table td { padding: 0; border: none; }
+    .ph-table td.hide-sm { display: none; }
   }
+  .rule-list li { display: flex; gap: 10px; padding: 8px 0; color: var(--text-2); font-size: 12.5px; }
+  .rule-list li svg { width: 16px; height: 16px; color: var(--accent-2); flex-shrink: 0; margin-top: 1px; }
+
+  /* ── Tasks: layout ── */
+  .tasks-layout { display: grid; grid-template-columns: 250px minmax(0, 1fr); gap: 20px;
+                  align-items: start; }
+  @media (max-width: 960px) { .tasks-layout { grid-template-columns: minmax(0, 1fr); } }
+  .task-nav { display: flex; flex-direction: column; gap: 8px; position: sticky; top: 0; }
+  @media (max-width: 960px) { .task-nav { position: static; flex-direction: row; overflow-x: auto; } }
+  .task-nav button { text-align: left; padding: 12px 14px; border-radius: var(--r-md);
+                     background: var(--surface); border: 1px solid var(--line); cursor: pointer;
+                     transition: border-color .15s, background .15s; min-width: 200px; }
+  .task-nav button:hover { border-color: var(--line-2); }
+  .task-nav button[aria-current="true"] { border-color: rgba(79,110,247,.6);
+                     background: linear-gradient(180deg, rgba(79,110,247,.10), rgba(79,110,247,.03)); }
+  .task-nav .t-title { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 13px; }
+  .task-nav .t-title svg { width: 15px; height: 15px; color: var(--accent-2); }
+  .task-nav .t-sub { font-size: 12px; color: var(--text-2); margin-top: 4px; white-space: nowrap;
+                     overflow: hidden; text-overflow: ellipsis; }
+
+  /* ── Stepper ── */
+  .stepper { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .stepper .s { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+                color: var(--text-3); }
+  .stepper .s .n { width: 20px; height: 20px; border-radius: 99px; display: inline-flex;
+                   align-items: center; justify-content: center; font-size: 11px; font-weight: 600;
+                   background: var(--raised); color: var(--text-3); border: 1px solid var(--line-2); }
+  .stepper .s.done { color: var(--text-2); }
+  .stepper .s.done .n { background: var(--accent-soft); color: var(--accent-2); border-color: rgba(79,110,247,.35); }
+  .stepper .s.now { color: var(--text); }
+  .stepper .s.now .n { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .stepper .sep { width: 18px; height: 1px; background: var(--line-2); }
+  @media (max-width: 640px) { .stepper .s .lbl { display: none; } .stepper .s.now .lbl { display: inline; } }
+
+  .section { padding: 18px; border-top: 1px solid var(--line); }
+  .section:first-of-type { border-top: none; }
+  .section-h { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+               margin-bottom: 12px; flex-wrap: wrap; }
+  .section-h .num { font-size: 11px; font-weight: 600; color: var(--accent-2); letter-spacing: .06em;
+                    text-transform: uppercase; }
+
+  /* ── Selectable cards (providers) ── */
+  .opt { position: relative; text-align: left; width: 100%; background: var(--bg);
+         border: 1px solid var(--line); border-radius: var(--r-md); padding: 12px 14px; cursor: pointer;
+         transition: border-color .15s, background .15s, transform .15s; color: var(--text); }
+  .opt:hover { border-color: var(--line-2); }
+  .opt[aria-checked="true"] { border-color: var(--accent);
+         background: linear-gradient(180deg, rgba(79,110,247,.12), rgba(79,110,247,.03));
+         box-shadow: 0 0 0 1px rgba(79,110,247,.3); }
+  .opt .check { position: absolute; top: 10px; right: 10px; width: 18px; height: 18px;
+                border-radius: 99px; border: 1px solid var(--line-2); display: flex;
+                align-items: center; justify-content: center; }
+  .opt[aria-checked="true"] .check { background: var(--accent); border-color: var(--accent); }
+  .opt .check svg { width: 12px; height: 12px; color: #fff; display: none; }
+  .opt[aria-checked="true"] .check svg { display: block; }
+
+  /* ── Model selector ── */
+  .ms-tools { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  .ms-search { position: relative; flex: 1 1 220px; min-width: 0; }
+  .ms-search svg { position: absolute; left: 10px; top: 50%; transform: translateY(-50%);
+                   width: 14px; height: 14px; color: var(--text-3); pointer-events: none; }
+  .ms-search input { padding-left: 32px !important; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-sm);
+         overflow: hidden; background: var(--bg); }
+  .seg button { height: 32px; padding: 0 11px; font-size: 12px; color: var(--text-2);
+                background: none; border: none; cursor: pointer; border-left: 1px solid var(--line); }
+  .seg button:first-child { border-left: none; }
+  .seg button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+  .ms-list { border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden;
+             max-height: 420px; overflow-y: auto; background: var(--bg); }
+  .ms-row { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; gap: 12px;
+            align-items: center; padding: 11px 14px; border-top: 1px solid var(--line);
+            cursor: pointer; transition: background .12s; width: 100%; text-align: left;
+            background: none; color: var(--text); border-left: 0; border-right: 0; border-bottom: 0; }
+  .ms-row:first-child { border-top: none; }
+  .ms-row:hover { background: rgba(255,255,255,.025); }
+  .ms-row[aria-checked="true"] { background: var(--accent-soft); }
+  .ms-row .radio { width: 16px; height: 16px; border-radius: 99px; border: 1.5px solid var(--line-2); }
+  .ms-row[aria-checked="true"] .radio { border: 5px solid var(--accent); }
+  .ms-row .name { font-weight: 600; font-size: 13px; overflow-wrap: anywhere; }
+  .ms-row .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; align-items: center; }
+  .ms-row .price { text-align: right; font-size: 11.5px; color: var(--text-2);
+                   font-variant-numeric: tabular-nums; white-space: nowrap; }
+  @media (max-width: 640px) {
+    .ms-row { grid-template-columns: 20px minmax(0, 1fr); }
+    .ms-row .price { grid-column: 2; text-align: left; }
+  }
+  .catalog-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+                 flex-wrap: wrap; padding: 10px 12px; border-radius: var(--r-sm); margin-bottom: 10px;
+                 background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; }
+
+  /* ── Detail panel for the chosen model ── */
+  .md { margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md); background: var(--surface-2);
+        border: 1px solid var(--line); display: grid; grid-template-columns: repeat(4, minmax(0,1fr));
+        gap: 12px; }
+  .md .k { font-size: 11px; color: var(--text-3); }
+  .md .v { font-size: 12.5px; color: var(--text); margin-top: 2px; overflow-wrap: anywhere; }
+  @media (max-width: 760px) { .md { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+
+  /* ── Parameters ── */
+  .prm { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 18rem); gap: 6px 20px;
+         padding: 12px 0; border-top: 1px solid var(--line); align-items: start; }
+  .prm:first-child { border-top: none; }
+  @media (max-width: 760px) { .prm { grid-template-columns: minmax(0, 1fr); } }
+  .prm .pl { font-size: 13px; font-weight: 500; color: var(--text); display: flex; gap: 8px;
+             align-items: center; flex-wrap: wrap; }
+  .prm .ph { font-size: 12px; color: var(--text-2); margin-top: 3px; max-width: 40rem; }
+  .prm .range { font-size: 11px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .prm .err { font-size: 11.5px; color: #fca5a5; margin-top: 5px; display: flex; gap: 5px; align-items: center; }
+  .prm.off .pl { color: var(--text-2); }
+  .aa-input { width: 100%; height: 34px; padding: 0 10px; border-radius: var(--r-sm);
+              border: 1px solid var(--line); font-size: 12.5px; }
+  textarea.aa-input { height: auto; min-height: 76px; padding: 8px 10px; resize: vertical; }
+  .aa .aa-input.is-invalid { border-color: var(--bad) !important;
+                             box-shadow: 0 0 0 2px rgba(239,68,68,.18) !important; }
+  .switch { position: relative; width: 38px; height: 22px; border-radius: 99px; flex-shrink: 0;
+            background: var(--raised); border: 1px solid var(--line-2); cursor: pointer;
+            transition: background .15s, border-color .15s; }
+  .switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px;
+                   border-radius: 99px; background: var(--text-3); transition: transform .15s, background .15s; }
+  .switch[aria-checked="true"] { background: rgba(79,110,247,.35); border-color: var(--accent); }
+  .switch[aria-checked="true"]::after { transform: translateX(16px); background: #fff; }
+  .switch:disabled { opacity: .45; cursor: not-allowed; }
+  details.adv { border: 1px solid var(--line); border-radius: var(--r-md); background: rgba(10,12,20,.5);
+                margin-top: 14px; }
+  details.adv > summary { list-style: none; cursor: pointer; padding: 11px 14px; display: flex;
+                          align-items: center; gap: 8px; font-size: 12.5px; color: var(--text-2);
+                          font-weight: 500; user-select: none; }
+  details.adv > summary::-webkit-details-marker { display: none; }
+  details.adv > summary:hover { color: var(--text); }
+  details.adv > summary .chev { margin-left: auto; transition: transform .15s; width: 15px; height: 15px; }
+  details.adv[open] > summary .chev { transform: rotate(180deg); }
+  details.adv > .adv-b { padding: 0 14px 6px; }
+  .notice { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px;
+            border-radius: var(--r-sm); font-size: 12px; line-height: 1.5; }
+  .notice svg { width: 15px; height: 15px; flex-shrink: 0; margin-top: 1px; }
+  .notice.info { background: var(--accent-soft); border: 1px solid rgba(79,110,247,.22); color: #c7d2fe; }
+  .notice.warn { background: var(--warn-soft); border: 1px solid rgba(245,158,11,.22); color: #fde68a; }
+  .notice.bad  { background: var(--bad-soft);  border: 1px solid rgba(239,68,68,.25);  color: #fecaca; }
+  .notice.ok   { background: var(--ok-soft);   border: 1px solid rgba(34,197,94,.22);  color: #bbf7d0; }
+
+  /* ── Test result ── */
+  .test-box { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+              flex-wrap: wrap; }
+  .result { margin-top: 12px; }
+  .kv { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 6px; font-size: 11.5px; color: var(--text-2); }
+
+  /* ── Save bar ── */
+  .savebar { position: sticky; bottom: 0; z-index: 5; display: flex; align-items: center;
+             justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 12px 18px;
+             border-top: 1px solid var(--line); border-radius: 0 0 var(--r-lg) var(--r-lg);
+             background: rgba(18,20,31,.92); backdrop-filter: blur(8px); }
+  .savebar .route { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px;
+                    color: var(--text-2); min-width: 0; }
+  .savebar .route svg { width: 13px; height: 13px; color: var(--text-3); }
+  .save-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; }
+  .save-state svg { width: 14px; height: 14px; }
+  .save-state.dirty { color: #fbbf24; }
+  .save-state.ok { color: #4ade80; }
+  .save-state.bad { color: #fca5a5; }
+  .save-state.idle { color: var(--text-3); }
+
+  /* ── Providers ── */
+  .prov .bal { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+  .prov .tile { padding: 10px 12px; border-radius: var(--r-sm); background: var(--bg);
+                border: 1px solid var(--line); min-width: 0; }
+  .prov .tile .v { font-size: 14px; font-weight: 600; margin-top: 2px; font-variant-numeric: tabular-nums;
+                   overflow-wrap: anywhere; }
+  @media (max-width: 520px) { .prov .bal { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  .keyrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .keyrow .masked { flex: 1 1 180px; display: flex; align-items: center; gap: 8px; height: 34px;
+                    padding: 0 10px; border-radius: var(--r-sm); background: var(--bg);
+                    border: 1px dashed var(--line-2); color: var(--text-2); min-width: 0; }
+  .keyrow .masked svg { width: 14px; height: 14px; color: var(--text-3); }
+
+  /* ── Activity ── */
+  .ev { display: grid; grid-template-columns: 92px 70px minmax(0, 1fr); gap: 12px; padding: 10px 18px;
+        border-top: 1px solid var(--line); font-size: 12px; align-items: start; }
+  .ev:first-child { border-top: none; }
+  .ev .t { color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .ev .m { color: var(--text); overflow-wrap: anywhere; }
+  @media (max-width: 640px) { .ev { grid-template-columns: 1fr auto; } .ev .m { grid-column: 1 / -1; } }
+  .lvl { font-size: 10.5px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; }
+  .lvl.INFO { color: var(--text-2); } .lvl.SUCCESS { color: #4ade80; }
+  .lvl.WARNING { color: #fbbf24; } .lvl.ERROR { color: #fca5a5; }
+
+  .skel { background: linear-gradient(90deg, #12141f 25%, #1a1d2c 50%, #12141f 75%);
+          background-size: 200% 100%; animation: aa-shimmer 1.4s infinite; border-radius: var(--r-md); }
+  @keyframes aa-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+  .spin { animation: aa-spin 1s linear infinite; }
+  @keyframes aa-spin { to { transform: rotate(360deg); } }
+  .fade-in { animation: aa-fade .18s ease-out; }
+  @keyframes aa-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .aa *, .aa *::before, .aa *::after { animation: none !important; transition: none !important; }
+  }
+  .empty { text-align: center; padding: 28px 16px; color: var(--text-2); }
+  .empty svg { width: 22px; height: 22px; color: var(--text-3); margin: 0 auto 8px; display: block; }
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="max-w-6xl mx-auto space-y-5" id="ai-root">
-
-  <!-- ── Overview strip ──────────────────────────────────────────────────── -->
-  <div class="grid md:grid-cols-2 gap-4" id="overview">
-    <div class="ai-card"><div class="ai-card-body"><div class="skeleton h-14"></div></div></div>
-    <div class="ai-card"><div class="ai-card-body"><div class="skeleton h-14"></div></div></div>
+<div class="aa" id="ai-root">
+  <div class="aa-head">
+    <div>
+      <p class="eyebrow">Workspace configuration</p>
+      <p class="lead">Pick the provider and model behind each AI task, tune only the
+        parameters that model documents, test it, then save. Each task uses exactly one
+        provider — a fallback never crosses providers.</p>
+    </div>
+    <div class="aa-stats" id="head-stats" aria-live="polite"></div>
   </div>
 
-  <!-- ── Provider credentials ────────────────────────────────────────────── -->
-  <section class="ai-card">
-    <div class="ai-card-header">
-      <div>
-        <h2 class="text-sm font-semibold text-primary flex items-center gap-2">
-          <i data-lucide="key-round" class="w-4 h-4 text-accent"></i>
-          Provider Credentials
-        </h2>
-        <p class="text-xs text-muted mt-0.5">
-          Keys are stored per workspace and shown masked once saved. Each task
-          uses exactly one provider — never two at the same time.
-        </p>
-      </div>
-    </div>
-    <div class="ai-card-body">
-      <div class="grid md:grid-cols-2 gap-4" id="credentials"></div>
-    </div>
+  <div class="aa-tabs" role="tablist" aria-label="AI Agents sections" id="tabs">
+    <button class="aa-tab" role="tab" id="tab-overview" data-tab="overview"
+            aria-controls="panel-overview" aria-selected="true" tabindex="0">
+      <i data-lucide="layout-dashboard" class="w-4 h-4"></i> Overview</button>
+    <button class="aa-tab" role="tab" id="tab-tasks" data-tab="tasks"
+            aria-controls="panel-tasks" aria-selected="false" tabindex="-1">
+      <i data-lucide="workflow" class="w-4 h-4"></i> AI Tasks
+      <span class="count" id="tab-count-tasks" hidden></span></button>
+    <button class="aa-tab" role="tab" id="tab-providers" data-tab="providers"
+            aria-controls="panel-providers" aria-selected="false" tabindex="-1">
+      <i data-lucide="key-round" class="w-4 h-4"></i> Providers
+      <span class="count" id="tab-count-providers" hidden></span></button>
+    <button class="aa-tab" role="tab" id="tab-activity" data-tab="activity"
+            aria-controls="panel-activity" aria-selected="false" tabindex="-1">
+      <i data-lucide="activity" class="w-4 h-4"></i> Activity</button>
+  </div>
+
+  <section role="tabpanel" id="panel-overview" aria-labelledby="tab-overview" tabindex="0">
+    <div class="aa-grid-2"><div class="skel" style="height:220px"></div><div class="skel" style="height:220px"></div></div>
+    <div class="skel" style="height:240px;margin-top:16px"></div>
   </section>
-
-  <!-- ── Category sections (chat + image) ────────────────────────────────── -->
-  <section class="ai-card" id="section-chat"></section>
-  <section class="ai-card" id="section-image"></section>
-
-  <p class="text-[11px] text-muted text-center pb-2">
-    Parameters come from each provider's official API documentation — models
-    only ever show the options their own endpoint accepts.
-  </p>
+  <section role="tabpanel" id="panel-tasks" aria-labelledby="tab-tasks" tabindex="0" hidden></section>
+  <section role="tabpanel" id="panel-providers" aria-labelledby="tab-providers" tabindex="0" hidden></section>
+  <section role="tabpanel" id="panel-activity" aria-labelledby="tab-activity" tabindex="0" hidden></section>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
 /* ═══════════════════════════════════════════════════════════════════════════
-   AI Agents — provider → category → model → configuration.
+   AI Agents console.
 
-   Everything rendered here is driven by /api/ai/registry, which serialises
-   bot/ai_registry.py. No model, parameter or option is hard-coded in this file,
-   so adding a provider server-side needs no change here.
+   Everything here is rendered from GET /api/ai/registry (bot/ai_registry.py
+   serialised, plus the Space's run-time-listed APIMart chat models) — no
+   provider, model, parameter or option is hard-coded, and every control maps
+   to a real endpoint:
+
+     task config   POST /api/ai/config            keys     POST/DELETE /api/ai/credentials
+     test model    POST /api/ai/test-model        connect  POST /api/ai/test   (free)
+     model list    POST /api/ai/catalog/<p>/refresh (free)  pricing POST …/pricing (public)
+     activity      GET  /api/ai/activity
+
+   Every string that came from the server or a provider is escaped before it
+   is put into the DOM — including toasts (showToast() inserts raw HTML).
    ═══════════════════════════════════════════════════════════════════════════ */
 
-let REG   = null;   // {categories, providers, models}
-let CFG   = null;   // {categories:{chat,image}, providers:{…}, status:{…}}
-const DRAFT = {};   // category → {provider, model, params}
+const S = {
+  reg: null, cfg: null,
+  tab: 'overview', task: 'chat',
+  drafts: {}, invalid: {}, notes: {}, test: {},
+  save: {},            // category → {state: saved|dirty|saving|success|invalid|error, message}
+  query: {}, family: {}, advOpen: {},
+  pricing: {}, pricingRounds: 0,
+  busy: new Set(),
+  replacing: new Set(),
+  activity: null, activityFilter: 'all',
+};
+
+/* ── Small helpers ───────────────────────────────────────────────────────── */
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g,
   (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const toast = (message, type = 'info') => showToast(esc(message), type);
+const clone = (v) => JSON.parse(JSON.stringify(v ?? null));
+const icon = (name, cls = '') => `<i data-lucide="${esc(name)}" class="${cls}" aria-hidden="true"></i>`;
+const icons = () => { try { lucide.createIcons(); } catch (_) {} };
+const stable = (obj) => JSON.stringify(Object.keys(obj || {}).sort().reduce((o, k) => (o[k] = obj[k], o), {}));
+const fmtNum = (n, d = 2) => Number(n).toLocaleString(undefined, { maximumFractionDigits: d });
+const pathHtml = (s) => esc(s).replace(/\//g, '/<wbr>');     // break long paths at "/" only
 
-const providerMeta = (id) => REG.providers.find((p) => p.id === id) || {};
-// Only models the operator may actually choose. Editing variants are resolved
-// from the brief analysis (does the contest ship reference files?), so offering
-// them here only invited picking a mode the pipeline would then override.
-const modelsOf = (provider, category) =>
-  REG.models.filter((m) => m.provider === provider && m.category === category
-                        && m.selectable !== false);
-const modelByKey = (key) => REG.models.find((m) => m.key === key);
+function epoch(t) {
+  if (t === null || t === undefined || t === '') return null;
+  if (typeof t === 'number') return t > 1e12 ? t / 1000 : t;
+  const ms = Date.parse(t);
+  return Number.isNaN(ms) ? null : ms / 1000;
+}
+function rel(t) {
+  const e = epoch(t);
+  if (!e) return 'never';
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - e));
+  if (secs < 45) return 'just now';
+  if (secs < 3600) return `${Math.max(1, Math.round(secs / 60))} min ago`;
+  if (secs < 86400) return `${Math.round(secs / 3600)} h ago`;
+  return `${Math.round(secs / 86400)} d ago`;
+}
+function absTime(t) {
+  const e = epoch(t);
+  return e ? new Date(e * 1000).toLocaleString() : '';
+}
 
-/* ── Boot ────────────────────────────────────────────────────────────────── */
+const providerMeta = (id) => (S.reg.providers.find((p) => p.id === id) || { id, label: id, accent: '#64748b' });
+const modelByKey = (key) => S.reg.models.find((m) => m.key === key);
+const catMeta = (id) => S.reg.categories.find((c) => c.id === id) || { id, label: id };
+const health = (pid) => (S.cfg.health || {})[pid] || { state: 'unknown' };
+const keyInfo = (pid) => (S.cfg.providers || {})[pid] || {};
+const lastTest = (pid) => (S.cfg.status || {})[pid] || null;
+const isListed = (pid, cat) => (providerMeta(pid).dynamic_models || []).includes(cat);
+const catalogOf = (pid) => ((S.cfg.catalogs || {})[pid]) || {};
 
-async function load() {
-  try {
-    const res  = await fetch('/api/ai/registry');
-    if (!res.ok) throw new Error((await res.json()).error || `HTTP ${res.status}`);
-    const data = await res.json();
-    REG = data.registry;
-    CFG = data.config;
-    CFG.health = CFG.health || {};
+function modelsOf(pid, cat) {
+  const saved = (S.cfg.categories[cat] || {}).model;
+  return S.reg.models.filter((m) => m.provider === pid && m.category === cat
+    && m.selectable !== false
+    && !(m.dynamic && m.catalog && m.catalog.listed === false && m.key !== saved));
+}
+function defaultsOf(model) {
+  const out = {};
+  (model?.params || []).forEach((p) => { if (!p.unavailable) out[p.key] = p.default; });
+  return out;
+}
+/** Saved params for a model on top of its documented defaults. The selected
+ *  model uses the server's validated view; others their stored tuning. */
+function paramsFor(cat, key) {
+  const model = modelByKey(key);
+  if (!model) return {};
+  const out = defaultsOf(model);
+  const savedCat = S.cfg.categories[cat] || {};
+  const saved = (key === savedCat.model && savedCat.params && Object.keys(savedCat.params).length)
+    ? savedCat.params : (savedCat.all_params || {})[key];
+  if (saved) for (const p of model.params) if (!p.unavailable && p.key in saved) out[p.key] = clone(saved[p.key]);
+  return out;
+}
+const visibleParam = (spec, params) => !spec.show_if
+  || String(params[spec.show_if.key]) === String(spec.show_if.equals);
 
-    for (const cat of REG.categories) {
-      const saved = CFG.categories[cat.id] || {};
-      DRAFT[cat.id] = {
-        provider: saved.provider || null,
-        model:    saved.model || null,
-        params:   JSON.parse(JSON.stringify(saved.params || {})),
-        dirty:    false,
-      };
-    }
-    renderAll();
-  } catch (err) {
-    showToast(`Could not load the AI registry: ${err.message}`, 'error');
+/* ── States (honest by construction) ─────────────────────────────────────── */
+// Green is reserved for a verification that actually succeeded: a live balance
+// read ("connected") or the last explicit test passing. A saved-but-untested
+// key is "Not verified", never "Ready".
+const PROVIDER_STATES = {
+  no_key:               ['idle', 'No key'],
+  connected:            ['ok',   'Connected'],
+  low_credits:          ['warn', 'Low credits'],
+  insufficient_credits: ['bad',  'No credits'],
+  key_limit:            ['bad',  'Key limit reached'],
+  invalid_key:          ['bad',  'Invalid key'],
+  rate_limited:         ['warn', 'Rate limited'],
+  unavailable:          ['bad',  'Unavailable'],
+};
+const FRESH_SECONDS = 24 * 3600;      // a passed check counts as "verified" for a day
+
+function providerState(pid) {
+  const h = health(pid);
+  if (!keyInfo(pid).has_key) return { tone: 'idle', label: 'No key', detail: 'No API key saved.' };
+  if (PROVIDER_STATES[h.state] && h.state !== 'no_key') {
+    const [tone, label] = PROVIDER_STATES[h.state];
+    return { tone, label, detail: h.message || '' };
+  }
+  const t = lastTest(pid);
+  if (t && t.ok) {
+    const age = Date.now() / 1000 - (epoch(t.checked_at) || 0);
+    if (age <= FRESH_SECONDS) return { tone: 'ok', label: `Verified ${rel(t.checked_at)}`, detail: t.message || '' };
+    return { tone: 'idle', stale: true, label: `Last verified ${rel(t.checked_at)}`,
+             detail: `The last check passed ${rel(t.checked_at)} — that says nothing about today's key or balance. Run Test connection (free) to check again.` };
+  }
+  if (t && !t.ok && t.message && !/not verified|key removed/i.test(t.message)) {
+    return { tone: 'bad', label: 'Last test failed', detail: t.message };
+  }
+  return { tone: 'idle', label: 'Not verified', detail: 'Key saved — run Test connection (free) to verify it.' };
+}
+function taskState(cat) {
+  const saved = S.cfg.categories[cat] || {};
+  const model = modelByKey(saved.model);
+  if (!saved.model) return { tone: 'idle', label: 'Not configured' };
+  if (saved.resolvable === false || !model) return { tone: 'bad', label: 'Model unavailable',
+    detail: 'The saved model cannot be resolved — choose a model again.' };
+  if (!keyInfo(model.provider).has_key) return { tone: 'warn', label: 'Needs API key',
+    detail: `Add the ${providerMeta(model.provider).label} key under Providers.` };
+  if (saved.listed === false) return { tone: 'warn', label: 'Not in key’s list',
+    detail: 'The provider no longer lists this model for your key.' };
+  const p = providerState(model.provider);
+  if (p.tone === 'ok') return { tone: 'ok', label: 'Ready', detail: p.label };
+  if (p.tone === 'idle') return { tone: 'idle', label: p.stale ? 'Not verified recently' : 'Not verified', detail: p.detail };
+  return p;
+}
+const pill = (st) => `<span class="pill ${esc(st.tone)}"${st.detail ? ` title="${esc(st.detail)}"` : ''}>${esc(st.label)}</span>`;
+
+/* ── Boot & data ─────────────────────────────────────────────────────────── */
+
+async function load({ keepDrafts = false } = {}) {
+  const res = await fetch('/api/ai/registry');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  S.reg = data.registry;
+  S.cfg = data.config;
+  S.cfg.health = S.cfg.health || {};
+  S.cfg.status = S.cfg.status || {};
+  for (const cat of S.reg.categories) {
+    if (!keepDrafts || !S.drafts[cat.id] || !isDirty(cat.id)) resetDraft(cat.id);
+    S.query[cat.id] ??= '';
+    S.family[cat.id] ??= 'all';
   }
 }
 
-function renderAll() {
-  renderOverview();
-  renderCredentials();
-  REG.categories.forEach(renderCategory);
-  lucide.createIcons();
+function resetDraft(cat) {
+  const saved = S.cfg.categories[cat] || {};
+  S.drafts[cat] = {
+    provider: saved.provider || null,
+    model: saved.model || null,
+    params: saved.model ? paramsFor(cat, saved.model) : {},
+  };
+  S.invalid[cat] = {};
+  S.save[cat] = { state: 'saved', message: '' };
+}
+
+function isDirty(cat) {
+  const d = S.drafts[cat];
+  const saved = S.cfg.categories[cat] || {};
+  if (!d) return false;
+  if ((d.provider || null) !== (saved.provider || null) || (d.model || null) !== (saved.model || null)) return true;
+  if (!d.model) return false;
+  return stable(d.params) !== stable(paramsFor(cat, saved.model));
+}
+
+function mergeListedModels(pid, models) {
+  const saved = (S.cfg.categories.chat || {}).model;
+  const keep = S.reg.models.filter((m) => m.provider === pid && m.dynamic && m.key === saved
+    && !models.some((n) => n.key === saved));
+  S.reg.models = S.reg.models.filter((m) => !(m.provider === pid && m.dynamic))
+    .concat(models, keep.map((m) => ({ ...m, catalog: { ...(m.catalog || {}), listed: false } })));
+}
+
+/* ── Rendering: shell ────────────────────────────────────────────────────── */
+
+function render() {
+  renderStats();
+  if (S.tab === 'overview') renderOverview();
+  if (S.tab === 'tasks') renderTasks();
+  if (S.tab === 'providers') renderProviders();
+  if (S.tab === 'activity') renderActivity();
+  icons();
+}
+
+function renderStats() {
+  const cats = S.reg.categories;
+  const ready = cats.filter((c) => taskState(c.id).tone === 'ok').length;
+  const keyed = S.reg.providers.filter((p) => keyInfo(p.id).has_key);
+  const verified = keyed.filter((p) => providerState(p.id).tone === 'ok').length;
+  const problems = keyed.filter((p) => providerState(p.id).tone === 'bad').length;
+  document.getElementById('head-stats').innerHTML = `
+    <span class="aa-stat">${icon('workflow', 'w-3.5 h-3.5')} Tasks ready <b>${ready}/${cats.length}</b></span>
+    <span class="aa-stat">${icon('shield-check', 'w-3.5 h-3.5')} Providers verified <b>${verified}/${keyed.length}</b></span>
+    ${problems ? `<span class="aa-stat" style="color:#fca5a5">${icon('alert-triangle', 'w-3.5 h-3.5')} <b style="color:#fca5a5">${problems}</b> need attention</span>` : ''}`;
+  const pc = document.getElementById('tab-count-providers');
+  pc.hidden = !problems; pc.textContent = problems; pc.className = 'count bad';
+  const dirty = cats.filter((c) => isDirty(c.id)).length;
+  const tc = document.getElementById('tab-count-tasks');
+  tc.hidden = !dirty; tc.textContent = dirty ? 'unsaved' : ''; tc.className = 'count';
+}
+
+function setTab(tab, { focus = false, push = true } = {}) {
+  S.tab = tab;
+  document.querySelectorAll('#tabs [role="tab"]').forEach((b) => {
+    const on = b.dataset.tab === tab;
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
+    if (on && focus) b.focus();
+  });
+  document.querySelectorAll('[role="tabpanel"]').forEach((p) => { p.hidden = p.id !== `panel-${tab}`; });
+  if (push) history.replaceState(null, '', `#${tab}${tab === 'tasks' ? '/' + S.task : ''}`);
+  if (tab === 'activity' && !S.activity) loadActivity();
+  render();
 }
 
 /* ── Overview ────────────────────────────────────────────────────────────── */
 
+function paramSummary(cat) {
+  const saved = S.cfg.categories[cat] || {};
+  const model = modelByKey(saved.model);
+  if (!model) return '—';
+  const shown = model.params.filter((p) => !p.unavailable && p.group !== 'advanced'
+    && p.key !== 'protocol' && visibleParam(p, saved.params || {}) && p.type !== 'textarea')
+    .slice(0, 4).map((p) => {
+      let v = (saved.params || {})[p.key];
+      if (p.type === 'select') v = (p.options.find((o) => String(o.value) === String(v)) || {}).label ?? v;
+      if (p.type === 'bool') v = v ? 'on' : 'off';
+      return `<span class="chip wrap">${esc(p.label)}: ${esc(v)}</span>`;
+    });
+  return shown.join(' ') || '<span class="faint">Defaults</span>';
+}
+
+function protocolOf(model, params) {
+  if (!model || !model.protocols) return null;
+  return model.protocols[params?.protocol] || model.protocols[model.default_protocol] || null;
+}
+
 function renderOverview() {
-  document.getElementById('overview').innerHTML = REG.categories.map((cat) => {
-    const saved = CFG.categories[cat.id] || {};
+  const host = document.getElementById('panel-overview');
+  const cards = S.reg.categories.map((cat) => {
+    const saved = S.cfg.categories[cat.id] || {};
     const model = modelByKey(saved.model);
-    const meta  = model ? providerMeta(model.provider) : null;
-    const ready = saved.configured;
+    const meta = model ? providerMeta(model.provider) : null;
+    const st = taskState(cat.id);
+    const proto = protocolOf(model, saved.params);
+    const t = model ? lastTest(model.provider) : null;
     return `
-      <div class="ai-card">
-        <div class="ai-card-body flex items-start justify-between gap-3">
+      <article class="aa-card task-card fade-in" aria-labelledby="ov-${esc(cat.id)}">
+        <div class="aa-card-h">
           <div class="min-w-0">
-            <div class="flex items-center gap-2 text-xs text-muted">
-              <i data-lucide="${esc(cat.icon)}" class="w-3.5 h-3.5"></i>
-              ${esc(cat.label)}
-            </div>
-            <div class="mt-1.5 text-sm font-semibold text-primary truncate">
-              ${model ? esc(model.name) : 'Not configured'}
-            </div>
-            <div class="mt-1 flex items-center gap-2 flex-wrap">
-              ${meta ? `<span class="chip" style="color:${esc(meta.accent)}">
-                          <span class="w-1.5 h-1.5 rounded-full inline-block"
-                                style="background:${esc(meta.accent)}"></span>
-                          ${esc(meta.label)}</span>` : ''}
-              ${model ? `<code class="inline">${esc(model.wire_model)}</code>` : ''}
-            </div>
-          </div>
-          ${(() => {
-            const h = (CFG.health || {})[model ? model.provider : ''] || {};
-            if (h.state === 'insufficient_credits')
-              return `<span class="pill pill-bad flex-shrink-0">
-                        <i data-lucide="credit-card" class="w-3 h-3"></i> No credits</span>`;
-            if (h.state === 'key_limit')
-              return `<span class="pill pill-bad flex-shrink-0">
-                        <i data-lucide="gauge" class="w-3 h-3"></i> Key limit</span>`;
-            if (h.state === 'invalid_key')
-              return `<span class="pill pill-bad flex-shrink-0">
-                        <i data-lucide="key-round" class="w-3 h-3"></i> Invalid key</span>`;
-            if (h.state === 'low_credits')
-              return `<span class="pill pill-warn flex-shrink-0">
-                        <i data-lucide="battery-low" class="w-3 h-3"></i> Low credits</span>`;
-            return `<span class="pill ${ready ? 'pill-ok' : 'pill-warn'} flex-shrink-0">
-                      <i data-lucide="${ready ? 'check' : 'alert-triangle'}" class="w-3 h-3"></i>
-                      ${ready ? 'Ready' : 'Needs API key'}</span>`;
-          })()}
-        </div>
-      </div>`;
-  }).join('');
-}
-
-/* ── Credentials ─────────────────────────────────────────────────────────── */
-
-function renderCredentials() {
-  document.getElementById('credentials').innerHTML = REG.providers.map((p) => {
-    const state  = CFG.providers[p.id] || {};
-    const health = (CFG.health || {})[p.id] || {};
-
-    // One pill per real provider state — never a vague "failed".
-    const PILLS = {
-      no_key:               ['pill-warn', 'alert-triangle', 'No key saved'],
-      connected:            ['pill-ok',   'plug-zap',       'Connected'],
-      low_credits:          ['pill-warn', 'battery-low',    'Low credits'],
-      insufficient_credits: ['pill-bad',  'credit-card',    'Insufficient credits'],
-      key_limit:            ['pill-bad',  'gauge',          'Key credit limit'],
-      invalid_key:          ['pill-bad',  'key-round',      'Invalid key'],
-      rate_limited:         ['pill-warn', 'timer',          'Rate limited'],
-      unavailable:          ['pill-bad',  'unplug',         'Unavailable'],
-      unknown:              ['pill-idle', 'help-circle',    'Not tested'],
-    };
-    const [cls, icon, text] = PILLS[health.state] || PILLS.unknown;
-    // A capped key is shown as blocked, but Test model stays ENABLED for it:
-    // that paid probe is the only check that can see the limit lifted.
-    const blocked = health.state === 'insufficient_credits'
-                 || health.state === 'invalid_key'
-                 || health.state === 'key_limit';
-    const modelTestBlocked = health.state === 'insufficient_credits'
-                          || health.state === 'invalid_key';
-    // Image-only providers have no chat model: their "Test model" is one real
-    // 1K image job at the cheapest settings.
-    const imageOnly = !(p.categories || []).includes('chat');
-
-    return `
-      <div class="rounded-xl border ${blocked ? 'border-danger/30' : 'border-border'}
-                  bg-bg p-4 flex flex-col gap-3">
-        <div class="flex items-start justify-between gap-2">
-          <div>
             <div class="flex items-center gap-2">
-              <span class="w-2.5 h-2.5 rounded-full" style="background:${esc(p.accent)}"></span>
-              <span class="text-sm font-semibold text-primary">${esc(p.label)}</span>
+              ${icon(cat.icon, 'w-4 h-4 text-accent')}
+              <h3 class="aa-h2" id="ov-${esc(cat.id)}">${esc(cat.label)}</h3>
             </div>
-            <p class="text-[11px] text-muted mt-1 leading-snug">${esc(p.tagline)}</p>
+            <p class="muted mt-1" style="font-size:12px">${esc(cat.description)}</p>
           </div>
-          <span class="pill ${cls} flex-shrink-0">
-            <i data-lucide="${icon}" class="w-3 h-3"></i> ${esc(text)}
-          </span>
+          ${pill(st)}
         </div>
-
-        ${health.balance_supported ? `
-          <div class="flex items-center justify-between gap-2 px-3 py-2 rounded-lg
-                      bg-surface border border-border">
-            <div>
-              <div class="text-[10px] uppercase tracking-wider text-muted">Balance</div>
-              <div class="text-sm font-semibold tabular-nums
-                          ${health.credits === null || health.credits === undefined
-                            ? 'text-muted'
-                            : health.credits > 0 ? 'text-primary' : 'text-danger'}">
-                ${health.credits === null || health.credits === undefined
-                  ? 'Unknown'
-                  : `${Number(health.credits).toLocaleString(undefined,
-                       { maximumFractionDigits: 2 })} credits`}
-              </div>
-            </div>
-            <div class="text-right">
-              <div class="text-[10px] uppercase tracking-wider text-muted">Last checked</div>
-              <div class="text-[11px] text-muted">${relativeTime(health.checked_at)}</div>
-            </div>
-          </div>` : ''}
-
-        <div class="flex gap-2">
-          <input type="password" class="ai-input" id="key-${esc(p.id)}"
-                 autocomplete="off" spellcheck="false"
-                 placeholder="${state.has_key
-                   ? `Saved ${esc(state.key_hint)} — type to replace`
-                   : `Paste your ${esc(p.label)} API key`}">
-          <button class="btn btn-primary" onclick="saveKey('${esc(p.id)}')"
-                  id="save-key-${esc(p.id)}">Save</button>
-        </div>
-
-        <div class="flex items-center justify-between gap-2 flex-wrap">
-          <div class="flex items-center gap-2">
-            <button class="btn btn-ghost" onclick="testKey('${esc(p.id)}')"
-                    id="test-key-${esc(p.id)}" ${state.has_key ? '' : 'disabled'}
-                    title="Checks authentication and balance — costs no credits">
-              <i data-lucide="activity" class="w-3.5 h-3.5"></i> Test connection
-            </button>
-            <button class="btn btn-ghost" onclick="testModel('${esc(p.id)}')"
-                    id="test-model-${esc(p.id)}"
-                    ${state.has_key && !modelTestBlocked ? '' : 'disabled'}
-                    title="${modelTestBlocked
-                      ? 'Blocked — resolve the provider state first'
-                      : health.state === 'key_limit'
-                        ? 'After raising the key limit, press this to verify and resume parked contests'
-                        : imageOnly
-                          ? 'Submits one real 1K test image — spends one low-tier image'
-                          : 'Sends one tiny real request — spends a few credits'}">
-              <i data-lucide="flask-conical" class="w-3.5 h-3.5"></i> Test model
-            </button>
-            ${state.has_key ? `
-              <button class="btn btn-ghost" onclick="clearKey('${esc(p.id)}')"
-                      title="Remove the stored key">
-                <i data-lucide="trash-2" class="w-3.5 h-3.5"></i>
-              </button>` : ''}
+        <div class="aa-card-b">
+          <dl>
+            <div class="row"><dt>Provider</dt><dd>${meta ? `<span class="inline-flex items-center gap-2"><span class="dot" style="background:${esc(meta.accent)}"></span>${esc(meta.label)}</span>` : '<span class="faint">Not chosen</span>'}</dd></div>
+            <div class="row"><dt>Model</dt><dd class="flex items-center gap-2 flex-wrap">${model ? `<span class="font-semibold">${esc(model.name)}</span>` : `<span class="faint">${esc(saved.model || 'Not chosen')}</span>`}
+              ${model && model.wire_model !== model.name ? `<code class="tag">${esc(model.wire_model)}</code>` : ''}</dd></div>
+            <div class="row"><dt>Endpoint</dt><dd class="flex items-center gap-2 flex-wrap">${model ? `<code class="tag">${pathHtml(proto ? proto.endpoint : model.endpoint)}</code>` : '—'}
+              ${proto ? `<span class="chip on">${esc(proto.label)}</span>` : ''}</dd></div>
+            <div class="row"><dt>Parameters</dt><dd class="flex gap-1.5 flex-wrap">${paramSummary(cat.id)}</dd></div>
+            <div class="row"><dt>Last test</dt><dd>${t ? `<span class="${t.ok ? '' : 'muted'}">${t.ok ? 'Passed' : 'Not passing'} · ${esc(rel(t.checked_at))}</span>` : '<span class="faint">Never tested</span>'}</dd></div>
+          </dl>
+          ${st.detail && st.tone !== 'ok' ? `<div class="notice ${st.tone === 'bad' ? 'bad' : st.tone === 'warn' ? 'warn' : 'info'} mt-3">${icon(st.tone === 'bad' ? 'alert-octagon' : 'info')}<span>${esc(st.detail)}</span></div>` : ''}
+          <div class="flex gap-2 mt-4 flex-wrap">
+            <button class="aa-btn aa-btn-primary aa-btn-sm" data-action="configure" data-cat="${esc(cat.id)}">${icon('sliders-horizontal')} Configure</button>
+            <button class="aa-btn aa-btn-ghost aa-btn-sm" data-action="go-providers" data-provider="${esc(model ? model.provider : '')}">${icon('key-round')} Provider</button>
           </div>
-          <a href="${esc(p.docs_url)}" target="_blank" rel="noopener"
-             class="text-[11px] text-muted hover:text-accent flex items-center gap-1">
-            API docs <i data-lucide="external-link" class="w-3 h-3"></i>
-          </a>
         </div>
-
-        <p class="text-[11px] leading-snug ${blocked ? 'text-danger' : 'text-muted'}"
-           id="cred-msg-${esc(p.id)}">${esc(health.message || '')}</p>
-      </div>`;
+      </article>`;
   }).join('');
-}
 
-function relativeTime(epochSeconds) {
-  if (!epochSeconds) return 'never';
-  const secs = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
-  if (secs < 60) return 'just now';
-  if (secs < 3600) return `${Math.floor(secs / 60)} min ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)} h ago`;
-  return `${Math.floor(secs / 86400)} d ago`;
-}
-
-async function saveKey(provider) {
-  const input = document.getElementById(`key-${provider}`);
-  const value = input.value.trim();
-  if (!value) { showToast('Paste a key first.', 'warning'); return; }
-
-  const btn = document.getElementById(`save-key-${provider}`);
-  withBusy(btn, 'Saving…', async () => {
-    const res  = await fetch('/api/ai/credentials', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider, api_key: value }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Save failed');
-    CFG.providers[provider] = { has_key: true, key_hint: data.key_hint };
-    input.value = '';
-    showToast(data.message, 'success');
-    renderCredentials(); renderOverview(); lucide.createIcons();
-  });
-}
-
-async function clearKey(provider) {
-  const label = providerMeta(provider).label;
-  const ok = await showConfirmModal(
-    `Remove the ${label} key?`,
-    `Any task configured to use ${label} will stop until a new key is saved.`,
-    'Remove');
-  if (!ok) return;
-  const res = await fetch(`/api/ai/credentials/${provider}`, { method: 'DELETE' });
-  const data = await res.json();
-  if (!res.ok) { showToast(data.error || 'Failed', 'error'); return; }
-  CFG.providers[provider] = { has_key: false, key_hint: '' };
-  delete (CFG.status || {})[provider];
-  showToast('Key removed.', 'info');
-  renderCredentials(); renderOverview(); lucide.createIcons();
-}
-
-async function testKey(provider) {
-  const btn = document.getElementById(`test-key-${provider}`);
-  const msg = document.getElementById(`cred-msg-${provider}`);
-  msg.textContent = 'Checking authentication and balance…';
-  msg.className = 'text-[11px] leading-snug text-muted';
-
-  withBusy(btn, 'Testing…', async () => {
-    const res  = await fetch('/api/ai/test', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Test failed');
-
-    CFG.health = CFG.health || {};
-    CFG.health[provider] = data.status || CFG.health[provider];
-    renderCredentials(); renderOverview(); lucide.createIcons();
-
-    if (data.requeued_contests) {
-      showToast(`${data.message}`, 'success');
-    } else {
-      showToast(data.message, data.ok ? 'success' : 'error');
-    }
-  });
-}
-
-async function testModel(provider) {
-  const btn = document.getElementById(`test-model-${provider}`);
-  const msg = document.getElementById(`cred-msg-${provider}`);
-  msg.textContent = 'Sending one minimal request…';
-  msg.className = 'text-[11px] leading-snug text-muted';
-
-  withBusy(btn, 'Testing…', async () => {
-    const res  = await fetch('/api/ai/test-model', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ provider }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Test failed');
-
-    msg.textContent = data.message;
-    msg.className = `text-[11px] leading-snug ${data.ok ? 'text-muted' : 'text-danger'}`;
-    showToast(data.message, data.ok ? 'success' : (data.skipped ? 'warning' : 'error'));
-
-    // A model test can reveal a state the free check could not.
-    const health = await fetch(`/api/ai/balance?provider=${provider}`);
-    if (health.ok) {
-      CFG.health = CFG.health || {};
-      CFG.health[provider] = await health.json();
-      renderCredentials(); renderOverview(); lucide.createIcons();
-    }
-  });
-}
-
-/* ── Category section ────────────────────────────────────────────────────── */
-
-function renderCategory(cat) {
-  const host  = document.getElementById(`section-${cat.id}`);
-  const draft = DRAFT[cat.id];
-  const providersHere = cat.providers;
-  const hasProvider = !!draft.provider;
-  const hasModel    = !!draft.model;
+  const rows = S.reg.providers.map((p) => {
+    const st = providerState(p.id);
+    const h = health(p.id);
+    const k = keyInfo(p.id);
+    const used = S.reg.categories.filter((c) => {
+      const m = modelByKey((S.cfg.categories[c.id] || {}).model);
+      return m && m.provider === p.id;
+    }).map((c) => c.id === 'chat' ? 'Chat' : 'Image');
+    return `
+      <tr class="clickable" data-action="go-providers" data-provider="${esc(p.id)}" tabindex="0"
+          aria-label="${esc(p.label)} — ${esc(st.label)}">
+        <td><span class="inline-flex items-center gap-2 font-medium"><span class="dot" style="background:${esc(p.accent)}"></span>${esc(p.label)}</span>
+            <div class="faint" style="font-size:11.5px">${used.length ? `Used by ${esc(used.join(' + '))}` : 'Not used by a task'}</div></td>
+        <td class="hide-sm">${k.has_key ? `<code class="tag">${esc(k.key_hint || 'saved')}</code>` : '<span class="faint">—</span>'}</td>
+        <td>${pill(st)}</td>
+        <td class="hide-sm tabular-nums">${balanceText(p.id)}</td>
+        <td class="hide-sm faint">${esc(rel(h.checked_at || (lastTest(p.id) || {}).checked_at))}</td>
+      </tr>`;
+  }).join('');
 
   host.innerHTML = `
-    <div class="ai-card-header">
-      <div>
-        <h2 class="text-sm font-semibold text-primary flex items-center gap-2">
-          <i data-lucide="${esc(cat.icon)}" class="w-4 h-4 text-accent"></i>
-          ${esc(cat.label)}
-        </h2>
-        <p class="text-xs text-muted mt-0.5">${esc(cat.description)}</p>
+    <div class="aa-grid-2">${cards}</div>
+    <div class="grid gap-4 mt-4" style="grid-template-columns:minmax(0,1fr)">
+      <div class="aa-card fade-in" style="overflow:hidden">
+        <div class="aa-card-h">
+          <div><h3 class="aa-h2">Provider health</h3>
+            <p class="muted" style="font-size:12px">Live balance reads are cached for 5 minutes; “Verified” means the last explicit test passed.</p></div>
+          <button class="aa-btn aa-btn-ghost aa-btn-sm" data-action="go-providers">${icon('arrow-right')} Manage</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="ph-table">
+            <thead><tr><th>Provider</th><th class="hide-sm">Key</th><th>Status</th><th class="hide-sm">Balance</th><th class="hide-sm">Checked</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
       </div>
-      <span class="pill pill-idle flex-shrink-0">
-        ${hasModel ? 'Step 3 of 3' : hasProvider ? 'Step 2 of 3' : 'Step 1 of 3'}
+      <div class="aa-card fade-in">
+        <div class="aa-card-b">
+          <h3 class="aa-h3 mb-1">How routing works</h3>
+          <ul class="rule-list">
+            <li>${icon('git-commit-horizontal')}<span>Each task calls exactly one provider and one model — the one saved here.</span></li>
+            <li>${icon('shield')}<span>A fallback is only ever a model of the <em>same</em> provider, and only when enabled for that model. Billing, key and rate-limit errors never fail over.</span></li>
+            <li>${icon('coins')}<span><b>Test connection</b> is free (balance, key and model list). <b>Test model</b> sends one tiny real request and spends a few credits.</span></li>
+          </ul>
+        </div>
+      </div>
+    </div>`;
+}
+
+function balanceText(pid) {
+  const h = health(pid);
+  if (!keyInfo(pid).has_key) return '<span class="faint">—</span>';
+  if (h.credits === null || h.credits === undefined) return '<span class="faint">Unknown</span>';
+  return `<span class="${h.credits > 0 ? '' : 'text-danger'}">${esc(fmtNum(h.credits))} credits</span>`;
+}
+
+/* ── AI Tasks ────────────────────────────────────────────────────────────── */
+
+function renderTasks() {
+  const host = document.getElementById('panel-tasks');
+  const nav = S.reg.categories.map((cat) => {
+    const d = S.drafts[cat.id];
+    const m = modelByKey(d.model);
+    const st = taskState(cat.id);
+    return `
+      <button data-action="pick-task" data-cat="${esc(cat.id)}" aria-current="${S.task === cat.id}">
+        <div class="t-title">${icon(cat.icon)} ${esc(cat.label)}</div>
+        <div class="t-sub">${m ? esc(`${providerMeta(m.provider).label} · ${m.name}`) : 'Not configured'}</div>
+        <div class="mt-2 flex items-center gap-1.5 flex-wrap">${pill(st)}${isDirty(cat.id) ? '<span class="pill warn">Unsaved</span>' : ''}</div>
+      </button>`;
+  }).join('');
+  host.innerHTML = `
+    <div class="tasks-layout">
+      <nav class="task-nav" aria-label="AI tasks">${nav}</nav>
+      <div class="aa-card fade-in" id="task-panel"></div>
+    </div>`;
+  renderTaskPanel();
+}
+
+function stepState(cat) {
+  const d = S.drafts[cat];
+  const t = S.test[cat];
+  return {
+    provider: !!d.provider,
+    model: !!(d.model && modelByKey(d.model)),
+    params: !!(d.model && modelByKey(d.model)) && !Object.keys(S.invalid[cat] || {}).length,
+    test: !!(t && t.state === 'ok' && t.model === d.model && t.sig === stable(coerced(cat))),
+    save: !isDirty(cat) && !!d.model,
+  };
+}
+
+function renderStepper(cat) {
+  const st = stepState(cat);
+  const steps = [['provider', 'Provider'], ['model', 'Model'], ['params', 'Parameters'], ['test', 'Test'], ['save', 'Save']];
+  const now = steps.find(([k]) => !st[k]);
+  return `<div class="stepper" aria-label="Configuration progress">${steps.map(([k, label], i) => `
+      ${i ? '<span class="sep" aria-hidden="true"></span>' : ''}
+      <span class="s ${st[k] ? 'done' : ''} ${now && now[0] === k ? 'now' : ''}">
+        <span class="n" aria-hidden="true">${st[k] ? '✓' : i + 1}</span>
+        <span class="lbl">${esc(label)}</span><span class="sr-only">${st[k] ? '(done)' : ''}</span>
+      </span>`).join('')}</div>`;
+}
+
+function renderTaskPanel() {
+  const cat = S.task;
+  const meta = catMeta(cat);
+  const host = document.getElementById('task-panel');
+  if (!host) return;
+  host.innerHTML = `
+    <div class="aa-card-h" style="flex-wrap:wrap">
+      <div class="min-w-0">
+        <h2 class="aa-h2 flex items-center gap-2">${icon(meta.icon, 'w-4 h-4 text-accent')} ${esc(meta.label)}</h2>
+        <p class="muted" style="font-size:12px">${esc(meta.description)}</p>
+      </div>
+      ${renderStepper(cat)}
+    </div>
+    <div id="sec-provider" class="section">${providerSection(cat)}</div>
+    <div id="sec-model" class="section">${modelSection(cat)}</div>
+    <div id="sec-params" class="section">${paramsSection(cat)}</div>
+    <div id="sec-test" class="section">${testSection(cat)}</div>
+    <div class="savebar" id="savebar">${saveBar(cat)}</div>`;
+  icons();
+  maybeAutoCatalog(cat);
+  maybeLoadPricing(cat);
+}
+
+function refreshSection(id, html) {
+  const el = document.getElementById(id);
+  if (el) { el.innerHTML = html; }
+}
+function refreshChrome() {
+  const cat = S.task;
+  const head = document.querySelector('#task-panel .stepper');
+  if (head) head.outerHTML = renderStepper(cat);
+  refreshSection('savebar', saveBar(cat));
+  renderStats();
+  const nav = document.querySelector('.task-nav');
+  if (nav) {
+    nav.querySelectorAll('button').forEach((b) => {
+      const c = b.dataset.cat;
+      const pills = b.querySelector('.mt-2');
+      if (pills) pills.innerHTML = pill(taskState(c)) + (isDirty(c) ? '<span class="pill warn">Unsaved</span>' : '');
+    });
+  }
+  icons();
+}
+
+/* Step 1 — provider */
+function providerSection(cat) {
+  const d = S.drafts[cat];
+  const pids = catMeta(cat).providers || [];
+  return `
+    <div class="section-h"><div><div class="num">Step 1</div><div class="aa-h3">Provider</div>
+      <p class="muted" style="font-size:12px">One provider per task. Its key is managed under Providers.</p></div></div>
+    <div class="aa-grid-3" role="radiogroup" aria-label="Provider for ${esc(catMeta(cat).label)}">
+      ${pids.map((pid) => {
+        const p = providerMeta(pid);
+        const listed = isListed(pid, cat);
+        const count = modelsOf(pid, cat).length;
+        const st = providerState(pid);
+        const sel = d.provider === pid;
+        return `
+          <button class="opt" role="radio" aria-checked="${sel}" data-action="pick-provider" data-cat="${esc(cat)}" data-provider="${esc(pid)}">
+            <span class="check" aria-hidden="true">${icon('check')}</span>
+            <div class="flex items-center gap-2 pr-6"><span class="dot" style="background:${esc(p.accent)}"></span>
+              <span class="font-semibold" style="font-size:13.5px">${esc(p.label)}</span></div>
+            <div class="flex gap-1.5 flex-wrap mt-2">
+              <span class="chip">${listed ? (count ? `${count} listed for your key` : 'Listed live per key') : `${count} model${count === 1 ? '' : 's'}`}</span>
+              ${pill(st)}
+            </div>
+          </button>`;
+      }).join('')}
+    </div>`;
+}
+
+/* Step 2 — model */
+function modelSection(cat) {
+  const d = S.drafts[cat];
+  if (!d.provider) {
+    return `<div class="section-h"><div><div class="num">Step 2</div><div class="aa-h3">Model</div></div></div>
+      <div class="empty">${icon('mouse-pointer-click')}Choose a provider first.</div>`;
+  }
+  const p = providerMeta(d.provider);
+  const listed = isListed(d.provider, cat);
+  const all = modelsOf(d.provider, cat);
+  const fam = S.family[cat] || 'all';
+  const families = [...new Set(all.map((m) => m.family).filter(Boolean))];
+
+  return `
+    <div class="section-h">
+      <div><div class="num">Step 2</div><div class="aa-h3">Model</div>
+        <p class="muted" style="font-size:12px">${listed
+          ? `Models your ${esc(p.label)} key can call — listed live by ${esc(p.label)}. Parameters come from ${esc(p.label)}’s endpoint documentation.`
+          : `Models ${esc(p.label)} documents for this task.`}</p></div>
+    </div>
+    ${listed ? catalogBar(d.provider) : ''}
+    ${all.length > 4 || listed ? `
+      <div class="ms-tools">
+        <label class="ms-search"><span class="sr-only">Search models</span>${icon('search')}
+          <input class="aa-input" type="text" placeholder="Search ${all.length} model${all.length === 1 ? '' : 's'}…"
+                 value="${esc(S.query[cat] || '')}" data-input="model-query" data-cat="${esc(cat)}" autocomplete="off"></label>
+        ${families.length > 1 || all.some((m) => m.capabilities?.vision) ? `
+          <div class="seg" role="group" aria-label="Filter models">
+            ${[['all', 'All'], ...families.map((f) => [f, f === 'gpt' ? 'GPT' : f === 'claude' ? 'Claude' : f]),
+               ...(all.some((m) => m.capabilities?.vision) ? [['vision', 'Vision']] : [])]
+              .map(([v, l]) => `<button type="button" aria-pressed="${fam === v}" data-action="model-family" data-cat="${esc(cat)}" data-value="${esc(v)}">${esc(l)}</button>`).join('')}
+          </div>` : ''}
+      </div>` : ''}
+    <div id="ms-results">${modelResults(cat)}</div>`;
+}
+
+/** The list + the chosen model's details — re-rendered alone while the
+ *  operator types a search or prices arrive, so the search box keeps focus. */
+function modelResults(cat) {
+  const d = S.drafts[cat];
+  const p = providerMeta(d.provider);
+  const listed = isListed(d.provider, cat);
+  const all = modelsOf(d.provider, cat);
+  const q = (S.query[cat] || '').trim().toLowerCase();
+  const fam = S.family[cat] || 'all';
+  const shown = all.filter((m) => (!q || `${m.name} ${m.wire_model} ${m.tagline}`.toLowerCase().includes(q))
+    && (fam === 'all' || (fam === 'vision' ? m.capabilities?.vision : m.family === fam)));
+  const model = modelByKey(d.model);
+  return `
+    <span class="sr-only" aria-live="polite">${shown.length} of ${all.length} models shown</span>
+    <div class="ms-list" role="radiogroup" aria-label="Model">
+      ${shown.length ? shown.map((m) => modelRow(cat, m)).join('') : `
+        <div class="empty">${icon(listed && !all.length ? 'list-x' : 'search-x')}${listed && !all.length
+          ? (keyInfo(d.provider).has_key ? 'No models listed yet — load the list above (free).' : `Add a ${esc(p.label)} key under Providers to list its models.`)
+          : 'No model matches this search.'}</div>`}
+    </div>
+    ${model ? modelDetail(cat, model) : ''}`;
+}
+
+function catalogBar(pid) {
+  const c = catalogOf(pid);
+  const has = keyInfo(pid).has_key;
+  const busy = S.busy.has(`catalog:${pid}`);
+  let text;
+  if (!has) text = `<span class="muted">No ${esc(providerMeta(pid).label)} key saved.</span>`;
+  else if (!c.fetched_at) text = `<span class="muted">The model list has not been loaded for this key yet.</span>`;
+  else text = `<span><b>${esc(c.count)}</b> GPT / Claude model${c.count === 1 ? '' : 's'} for your key${c.other_chat_models ? ` <span class="faint">· ${esc(c.other_chat_models)} other chat models not offered</span>` : ''}
+      <span class="faint">· updated ${esc(rel(c.fetched_at))}</span>${c.stale ? ' <span class="chip warn">stale</span>' : ''}</span>`;
+  return `
+    <div class="catalog-bar" aria-live="polite">
+      <div class="min-w-0">${text}${c.last_error ? `<div class="mt-1" style="color:#fca5a5;font-size:11.5px">Last refresh failed: ${esc(c.last_error.message)}</div>` : ''}</div>
+      ${has ? `<button class="aa-btn aa-btn-secondary aa-btn-sm" data-action="refresh-catalog" data-provider="${esc(pid)}" ${busy ? 'disabled' : ''}>
+        ${icon('refresh-cw', busy ? 'spin' : '')} ${busy ? 'Loading…' : c.fetched_at ? 'Refresh list' : 'Load models'}</button>`
+        : `<button class="aa-btn aa-btn-ghost aa-btn-sm" data-action="go-providers" data-provider="${esc(pid)}">${icon('key-round')} Add key</button>`}
+    </div>`;
+}
+
+function priceText(m) {
+  if (!m.dynamic) return '';
+  const pr = S.pricing[m.wire_model];
+  if (!pr) return '<span class="faint">price …</span>';
+  if (!pr.available) return '<span class="faint">price not published</span>';
+  const r = pr.rates || {};
+  const f = (v) => (v === undefined ? '—' : `$${fmtNum(v, 3)}`);
+  return `in ${f(r.input)} · out ${f(r.output)}<div class="faint" style="font-size:10.5px">per 1M tokens</div>`;
+}
+
+function modelRow(cat, m) {
+  const sel = S.drafts[cat].model === m.key;
+  const caps = Object.entries(m.capabilities || {}).filter(([, on]) => on)
+    .map(([n]) => `<span class="chip on">${esc(n.replace(/_/g, ' '))}</span>`).join('');
+  const notListed = m.dynamic && m.catalog && m.catalog.listed === false;
+  return `
+    <button type="button" class="ms-row" role="radio" aria-checked="${sel}" data-action="pick-model" data-cat="${esc(cat)}" data-model="${esc(m.key)}">
+      <span class="radio" aria-hidden="true"></span>
+      <span class="min-w-0">
+        <span class="name">${esc(m.name)}</span>
+        <span class="meta">
+          ${m.family ? `<span class="chip">${esc(m.family === 'gpt' ? 'GPT' : m.family === 'claude' ? 'Claude' : m.family)}</span>` : ''}
+          ${caps}
+          ${notListed ? '<span class="chip warn">not in key’s list</span>' : ''}
+          ${!m.dynamic ? `<span class="faint" style="font-size:11.5px">${esc(m.tagline)}</span>` : ''}
+        </span>
       </span>
-    </div>
-
-    <div class="ai-card-body pt-2">
-      <!-- Step 1 — provider -->
-      <div class="step ${hasProvider ? 'step-done' : ''}">
-        ${stepHeader(1, 'Provider',
-          'One provider per task. Choosing here decides which models are available.')}
-        <div class="grid sm:grid-cols-2 gap-3 mt-3">
-          ${providersHere.map((pid) => providerTile(cat.id, pid)).join('')}
-        </div>
-      </div>
-
-      <!-- Step 2 — model -->
-      <div class="step ${hasModel ? 'step-done' : ''} ${hasProvider ? '' : 'step-locked'}">
-        ${stepHeader(2, 'Model',
-          hasProvider
-            ? `Models published by ${esc(providerMeta(draft.provider).label)} for this task.`
-            : 'Select a provider first.')}
-        <div class="grid sm:grid-cols-2 gap-3 mt-3">
-          ${hasProvider
-            ? modelsOf(draft.provider, cat.id).map((m) => modelTile(cat.id, m)).join('')
-            : '<div class="skeleton h-20"></div><div class="skeleton h-20"></div>'}
-        </div>
-      </div>
-
-      <!-- Step 3 — configuration -->
-      <div class="step ${hasModel ? '' : 'step-locked'}" id="config-${esc(cat.id)}">
-        ${stepHeader(3, 'Model configuration',
-          hasModel
-            ? 'Only the parameters this exact model documents.'
-            : 'Select a model to configure it.')}
-        ${hasModel ? renderParams(cat.id) : '<div class="skeleton h-24 mt-3"></div>'}
-      </div>
-    </div>
-
-    ${hasModel ? saveBar(cat.id) : ''}`;
-}
-
-function stepHeader(n, title, hint) {
-  return `
-    <div class="flex items-center gap-2.5">
-      <span class="step-num">${n}</span>
-      <div>
-        <div class="text-xs font-semibold text-primary">${esc(title)}</div>
-        <div class="text-[11px] text-muted">${hint}</div>
-      </div>
-    </div>`;
-}
-
-function providerTile(category, pid) {
-  const p = providerMeta(pid);
-  const selected = DRAFT[category].provider === pid;
-  const hasKey = (CFG.providers[pid] || {}).has_key;
-  const count = modelsOf(pid, category).length;
-  return `
-    <button class="tile ${selected ? 'selected' : ''}"
-            onclick="pickProvider('${esc(category)}','${esc(pid)}')">
-      <div class="flex items-center gap-2">
-        <span class="w-2.5 h-2.5 rounded-full" style="background:${esc(p.accent)}"></span>
-        <span class="text-sm font-semibold text-primary">${esc(p.label)}</span>
-      </div>
-      <p class="text-[11px] text-muted mt-1 leading-snug pr-4">${esc(p.tagline)}</p>
-      <div class="flex items-center gap-1.5 mt-2">
-        <span class="chip">${count} model${count === 1 ? '' : 's'}</span>
-        <span class="chip ${hasKey ? 'chip-on' : ''}">
-          ${hasKey ? 'Key saved' : 'No key'}
-        </span>
-      </div>
+      <span class="price">${priceText(m)}</span>
     </button>`;
 }
 
-function modelTile(category, m) {
-  const selected = DRAFT[category].model === m.key;
-  const caps = Object.entries(m.capabilities || {})
-    .filter(([, on]) => on)
-    .map(([name]) => `<span class="chip chip-on">${esc(name.replace(/_/g, ' '))}</span>`)
-    .join('');
-  return `
-    <button class="tile ${selected ? 'selected' : ''}"
-            onclick="pickModel('${esc(category)}','${esc(m.key)}')">
-      <div class="text-sm font-semibold text-primary pr-5">${esc(m.name)}</div>
-      <p class="text-[11px] text-muted mt-1 leading-snug">${esc(m.tagline)}</p>
-      <div class="flex items-center gap-1.5 mt-2 flex-wrap">${caps}</div>
-      <div class="flex items-center justify-between mt-2 gap-2 min-w-0">
-        <code class="inline truncate min-w-0">${esc(m.endpoint)}</code>
-        <span class="text-[10px] text-muted hover:text-accent flex items-center gap-1 flex-shrink-0"
-              onclick="event.stopPropagation(); window.open('${esc(m.docs_url)}','_blank')">
-          docs <i data-lucide="external-link" class="w-2.5 h-2.5"></i>
-        </span>
-      </div>
-    </button>`;
+function modelDetail(cat, m) {
+  const d = S.drafts[cat];
+  const proto = protocolOf(m, d.params);
+  const pr = m.dynamic ? S.pricing[m.wire_model] : null;
+  const limit = (m.limits && m.limits.max_output_tokens) || (pr && pr.limits && pr.limits.max_output_tokens);
+  const cells = [
+    ['Wire model', `<code class="tag">${esc(m.wire_model)}</code>`],
+    ['Endpoint', `<code class="tag">${pathHtml(proto ? proto.endpoint : m.endpoint)}</code>`],
+    ['Protocol', proto ? esc(proto.label) : '<span class="faint">Fixed by the provider</span>'],
+    ['Documentation', `<a class="aa-link" href="${esc(proto ? proto.docs_url : m.docs_url)}" target="_blank" rel="noopener">Open docs ${icon('external-link')}</a>`],
+  ];
+  if (m.dynamic) {
+    const r = (pr && pr.available) ? pr.rates : null;
+    cells.push(['Input / output', r ? `$${esc(fmtNum(r.input, 3))} / $${esc(fmtNum(r.output, 3))} <span class="faint">per 1M</span>` : `<span class="faint">${pr ? 'Not published' : 'Loading…'}</span>`]);
+    cells.push(['Cached input', r && r.cached_input !== undefined ? `$${esc(fmtNum(r.cached_input, 3))} <span class="faint">per 1M</span>` : '<span class="faint">—</span>']);
+    cells.push(['Output limit', limit ? `${esc(fmtNum(limit, 0))} tokens` : '<span class="faint">Not published</span>']);
+    cells.push(['Capability tags', (m.catalog.tags || []).length ? esc(m.catalog.tags.join(', ')) : '<span class="faint">Not tagged</span>']);
+  }
+  const visionNote = m.capabilities?.vision && proto && !proto.vision
+    ? `<div class="notice warn mt-3">${icon('image-off')}<span>${esc(proto.label)} documents text-only messages, so contest reference images are not sent to this model. Choose ${esc(Object.values(m.protocols).filter((p) => p.vision).map((p) => p.label).join(' or '))} as the API protocol to include them.</span></div>` : '';
+  const listedNote = m.dynamic && m.catalog.listed === false
+    ? `<div class="notice warn mt-3">${icon('alert-triangle')}<span>This model is not in your key’s current list. It still runs if the provider accepts it, but it cannot be re-saved — pick a listed model or refresh the list.</span></div>` : '';
+  const priceNote = pr && pr.available ? `<p class="faint mt-2" style="font-size:11px">Prices are APIMart’s published effective rates (${esc(pr.group || 'default')} group${pr.tier_note ? `, ${esc(pr.tier_note)}` : ''}); your account’s rate may differ.</p>` : '';
+  return `<div class="md fade-in">${cells.map(([k, v]) => `<div><div class="k">${esc(k)}</div><div class="v">${v}</div></div>`).join('')}</div>${priceNote}${visionNote}${listedNote}`;
 }
 
-function pickProvider(category, pid) {
-  const draft = DRAFT[category];
-  if (draft.provider === pid) return;
-  draft.provider = pid;
-  // One provider per task: the previous model belonged to another provider, so
-  // it cannot carry over. Pre-select this provider's first model.
-  const first = modelsOf(pid, category)[0];
-  draft.model = first ? first.key : null;
-  draft.params = first ? paramsFor(category, first.key) : {};
-  draft.dirty = true;
-  renderCategory(REG.categories.find((c) => c.id === category));
-  lucide.createIcons();
+/* Step 3 — parameters */
+function paramsSection(cat) {
+  const d = S.drafts[cat];
+  const model = modelByKey(d.model);
+  const head = `<div class="section-h"><div><div class="num">Step 3</div><div class="aa-h3">Parameters</div>
+      <p class="muted" style="font-size:12px">Only what this model’s endpoint documents. Stage-specific values (e.g. a critique’s low temperature) still win per call; max tokens is a hard ceiling.</p></div>
+      ${model ? `<button class="aa-btn aa-btn-ghost aa-btn-sm" data-action="reset-defaults" data-cat="${esc(cat)}">${icon('rotate-ccw')} Reset to defaults</button>` : ''}</div>`;
+  if (!model) return head + `<div class="empty">${icon('sliders-horizontal')}Choose a model to configure it.</div>`;
+
+  const live = model.params.filter((p) => !p.unavailable && visibleParam(p, d.params));
+  const basic = live.filter((p) => p.group !== 'advanced');
+  const adv = live.filter((p) => p.group === 'advanced');
+  const off = model.params.filter((p) => p.unavailable);
+  const notes = S.notes[cat] || [];
+  const mode = modeHint(model);
+  return head + `
+    ${mode ? `<div class="notice info mb-3">${icon('info')}<span>${esc(mode)}</span></div>` : ''}
+    ${notes.length ? `<div class="notice warn mb-3">${icon('wand-2')}<div><b>Adjusted on save:</b><ul class="mt-1" style="list-style:disc;padding-left:16px">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></div></div>` : ''}
+    <div>${basic.map((p) => paramRow(cat, p)).join('') || '<p class="faint">No basic parameters.</p>'}</div>
+    ${adv.length || off.length ? `
+      <details class="adv" ${S.advOpen[cat] ? 'open' : ''} data-adv="${esc(cat)}">
+        <summary>${icon('settings-2', 'w-4 h-4')} Advanced settings <span class="chip">${adv.length}</span>
+          ${off.length ? `<span class="chip">${off.length} not sent</span>` : ''}${icon('chevron-down', 'chev')}</summary>
+        <div class="adv-b">
+          ${adv.map((p) => paramRow(cat, p)).join('')}
+          ${off.length ? `<div class="aa-label mt-3 mb-1">Documented but not sent</div>${off.map((p) => paramRow(cat, p)).join('')}` : ''}
+        </div>
+      </details>` : ''}`;
 }
 
-function pickModel(category, key) {
-  const draft = DRAFT[category];
-  if (draft.model === key) return;
-  draft.model = key;
-  draft.params = paramsFor(category, key);
-  draft.dirty = true;
-  renderCategory(REG.categories.find((c) => c.id === category));
-  lucide.createIcons();
-}
-
-/** Saved params for this model if we have them, else the documented defaults. */
-function paramsFor(category, key) {
-  const saved = (CFG.categories[category] || {}).all_params || {};
-  if (saved[key]) return JSON.parse(JSON.stringify(saved[key]));
-  const model = modelByKey(key);
-  const out = {};
-  (model.params || []).forEach((p) => { if (!p.unavailable) out[p.key] = p.default; });
-  return out;
-}
-
-/* ── Parameters ──────────────────────────────────────────────────────────── */
-
-function renderParams(category) {
-  const draft = DRAFT[category];
-  const model = modelByKey(draft.model);
-  const basic    = model.params.filter((p) => p.group !== 'advanced');
-  const advanced = model.params.filter((p) => p.group === 'advanced');
-
-  const modeNote = modeHint(model);
-
-  return `
-    <div class="mt-3">
-      ${modeNote ? `
-        <div class="flex items-start gap-2 px-3 py-2 mb-3 rounded-lg
-                    bg-accent/5 border border-accent/20 text-[11px] text-muted">
-          <i data-lucide="info" class="w-3.5 h-3.5 text-accent flex-shrink-0 mt-0.5"></i>
-          <span>${modeNote}</span>
-        </div>` : ''}
-
-      <div>${basic.map((p) => paramRow(category, p)).join('')}</div>
-
-      ${advanced.length ? `
-        <details class="mt-3 rounded-lg border border-border bg-bg/40">
-          <summary class="px-3 py-2 text-xs text-muted cursor-pointer select-none
-                          hover:text-primary flex items-center gap-2">
-            <i data-lucide="sliders-horizontal" class="w-3.5 h-3.5"></i>
-            Advanced parameters (${advanced.length})
-          </summary>
-          <div class="px-3 pb-2">
-            ${advanced.map((p) => paramRow(category, p)).join('')}
-          </div>
-        </details>` : ''}
-    </div>`;
-}
-
-/** Explains automatic text-to-image / image-to-image switching. */
 function modeHint(model) {
   if (model.category !== 'image') return '';
-  if (model.sibling_i2i) {
-    return `Generation mode is decided per contest by the brief analysis: with
-            reference files the bot uses this family's image-to-image model,
-            without them it generates from the prompt alone. Nothing to choose.`;
-  }
-  if ((model.capabilities || {}).reference_images) {
-    return `Generation mode is decided per contest by the brief analysis: a
-            contest's reference files are sent automatically, and without them
-            the same model generates from the prompt alone.`;
-  }
+  if (model.sibling_i2i) return 'Generation mode is decided per contest by the brief analysis: with reference files the bot uses this family’s image-to-image model, without them it generates from the prompt alone.';
+  if ((model.capabilities || {}).reference_images) return 'Generation mode is decided per contest by the brief analysis: a contest’s reference files are sent automatically, and without them the same model generates from the prompt alone.';
   return '';
 }
 
-function paramRow(category, spec) {
-  const draft = DRAFT[category];
-  if (spec.show_if) {
-    const current = draft.params[spec.show_if.key];
-    if (String(current) !== String(spec.show_if.equals)) return '';
-  }
-  const disabled = !!spec.unavailable;
-  const id = `p-${category}-${spec.key}`;
+function rangeText(spec) {
+  if (spec.type !== 'int' && spec.type !== 'float') return '';
+  const lo = spec.min ?? null, hi = spec.max ?? null;
+  if (lo === null && hi === null) return '';
+  if (hi === null) return `≥ ${esc(fmtNum(lo, 2))}`;
+  if (lo === null) return `≤ ${esc(fmtNum(hi, 2))}`;
+  return `${esc(fmtNum(lo, 2))} – ${esc(fmtNum(hi, 2))}`;
+}
 
+function paramRow(cat, spec) {
+  const id = `p-${cat}-${spec.key}`;
+  const err = (S.invalid[cat] || {})[spec.key];
+  const range = rangeText(spec);
   return `
-    <div class="param-row">
+    <div class="prm ${spec.unavailable ? 'off' : ''}">
       <div class="min-w-0">
-        <div class="text-xs font-medium ${disabled ? 'text-muted' : 'text-primary'}
-                    flex items-center gap-1.5">
-          ${esc(spec.label)}
-          ${spec.help ? `
-            <span class="tip">
-              <i data-lucide="help-circle" class="w-3 h-3 text-muted"></i>
-              <span class="tip-body">${esc(spec.help)}</span>
-            </span>` : ''}
-          ${disabled ? '<span class="chip">unavailable</span>' : ''}
-        </div>
-        ${spec.wire && spec.wire !== spec.key && !disabled
-          ? `<code class="inline mt-1 inline-block">${esc(spec.wire)}</code>` : ''}
+        <label class="pl" for="${esc(id)}">${esc(spec.label)}
+          ${spec.unavailable ? '<span class="chip">not sent</span>' : ''}
+          ${range ? `<span class="range">${range}</span>` : ''}</label>
+        <div class="ph" id="${esc(id)}-help">${esc(spec.help || '')}</div>
       </div>
-      <div>${paramControl(category, spec, id)}</div>
+      <div>${paramControl(cat, spec, id)}
+        ${err ? `<div class="err" role="alert">${icon('alert-circle', 'w-3.5 h-3.5')}${esc(err)}</div>` : ''}</div>
     </div>`;
 }
 
-function paramControl(category, spec, id) {
-  const value = DRAFT[category].params[spec.key];
-  const onchange = `onParamChange('${esc(category)}','${esc(spec.key)}', this)`;
-
+function paramControl(cat, spec, id) {
+  const value = S.drafts[cat].params[spec.key];
+  const invalid = (S.invalid[cat] || {})[spec.key] ? 'is-invalid' : '';
+  const common = `id="${esc(id)}" data-param="${esc(spec.key)}" data-cat="${esc(cat)}" aria-describedby="${esc(id)}-help"`;
   if (spec.unavailable) {
-    return `<div class="flex justify-end"><button class="toggle" disabled></button></div>`;
+    return `<button type="button" class="switch" role="switch" aria-checked="false" disabled ${common} aria-label="${esc(spec.label)} (not available)"></button>`;
   }
-
   switch (spec.type) {
     case 'select':
-      return `
-        <select class="ai-input" id="${id}" onchange="${onchange}">
-          ${spec.options.map((o) => `
-            <option value="${esc(o.value)}" ${String(value) === String(o.value) ? 'selected' : ''}>
-              ${esc(o.label)}
-            </option>`).join('')}
-        </select>`;
-
+      return `<select class="aa-input ${invalid}" ${common}>${spec.options.map((o) =>
+        `<option value="${esc(o.value)}" ${String(value) === String(o.value) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
     case 'int':
     case 'float':
-      return `
-        <input type="number" class="ai-input" id="${id}" value="${esc(value)}"
-               ${spec.min !== null && spec.min !== undefined ? `min="${spec.min}"` : ''}
-               ${spec.max !== null && spec.max !== undefined ? `max="${spec.max}"` : ''}
-               step="${spec.step || 1}" oninput="${onchange}">`;
-
+      return `<input type="number" inputmode="decimal" class="aa-input ${invalid}" ${common} value="${esc(value)}"
+        ${spec.min !== null && spec.min !== undefined ? `min="${esc(spec.min)}"` : ''}
+        ${spec.max !== null && spec.max !== undefined ? `max="${esc(spec.max)}"` : ''} step="${esc(spec.step || 1)}">`;
     case 'bool':
-      return `
-        <div class="flex justify-end">
-          <button class="toggle ${value ? 'on' : ''}" id="${id}"
-                  onclick="toggleParam('${esc(category)}','${esc(spec.key)}', this)"></button>
-        </div>`;
-
+      return `<button type="button" class="switch" role="switch" aria-checked="${value ? 'true' : 'false'}" ${common} data-action="toggle-param"></button>`;
     case 'textarea':
-      return `
-        <textarea class="ai-input" id="${id}" rows="3"
-                  placeholder="${esc(spec.placeholder || '')}"
-                  ${spec.maxlength ? `maxlength="${spec.maxlength}"` : ''}
-                  oninput="${onchange}">${esc(value || '')}</textarea>`;
-
+      return `<textarea class="aa-input ${invalid}" rows="3" ${common} placeholder="${esc(spec.placeholder || '')}"
+        ${spec.maxlength ? `maxlength="${esc(spec.maxlength)}"` : ''}>${esc(value || '')}</textarea>`;
     default:
-      return `
-        <input type="text" class="ai-input" id="${id}" value="${esc(value || '')}"
-               placeholder="${esc(spec.placeholder || '')}" oninput="${onchange}">`;
+      return `<input type="text" class="aa-input ${invalid}" ${common} value="${esc(value ?? '')}" placeholder="${esc(spec.placeholder || '')}">`;
   }
 }
 
-function onParamChange(category, key, el) {
-  const model = modelByKey(DRAFT[category].model);
-  const spec  = model.params.find((p) => p.key === key);
-  let value = el.value;
-
-  if (spec.type === 'int' || spec.type === 'float') {
-    value = spec.type === 'int' ? parseInt(value, 10) : parseFloat(value);
-    if (Number.isNaN(value)) return;                       // mid-typing
-    if (spec.min !== null && spec.min !== undefined && value < spec.min) value = spec.min;
-    if (spec.max !== null && spec.max !== undefined && value > spec.max) value = spec.max;
+function validate(cat) {
+  const d = S.drafts[cat];
+  const model = modelByKey(d.model);
+  const errs = {};
+  if (!model) return errs;
+  for (const p of model.params) {
+    if (p.unavailable || !visibleParam(p, d.params)) continue;
+    const v = d.params[p.key];
+    if (p.type === 'int' || p.type === 'float') {
+      const n = Number(v);
+      if (v === '' || v === null || v === undefined || Number.isNaN(n)) errs[p.key] = 'Enter a number.';
+      else if (p.type === 'int' && !Number.isInteger(n)) errs[p.key] = 'Whole numbers only.';
+      else if (p.min !== null && p.min !== undefined && n < p.min) errs[p.key] = `The minimum is ${fmtNum(p.min)}.`;
+      else if (p.max !== null && p.max !== undefined && n > p.max) errs[p.key] = `The maximum is ${fmtNum(p.max)}.`;
+    } else if ((p.type === 'text' || p.type === 'textarea') && p.maxlength && String(v || '').length > p.maxlength) {
+      errs[p.key] = `At most ${p.maxlength} characters.`;
+    }
+    if (p.key === 'stop_sequences' && model.dynamic
+        && String(v || '').split(',').map((x) => x.trim()).filter(Boolean).length > 4) {
+      errs[p.key] = 'At most 4 stop sequences.';
+    }
   }
-  DRAFT[category].params[key] = value;
-  DRAFT[category].dirty = true;
+  return errs;
+}
 
-  // A select can gate other rows (Custom canvas → width/height), so re-render
-  // the configuration step; plain typing must not steal focus.
-  if (spec.type === 'select') {
-    refreshConfig(category);
-  } else {
-    markDirty(category);
+function coerced(cat) {
+  const d = S.drafts[cat];
+  const model = modelByKey(d.model);
+  const out = {};
+  for (const p of model?.params || []) {
+    if (p.unavailable || !(p.key in d.params)) continue;
+    let v = d.params[p.key];
+    if (p.type === 'int') v = parseInt(v, 10);
+    if (p.type === 'float') v = parseFloat(v);
+    out[p.key] = v;
   }
+  return out;
 }
 
-function toggleParam(category, key, el) {
-  const next = !el.classList.contains('on');
-  el.classList.toggle('on', next);
-  DRAFT[category].params[key] = next;
-  markDirty(category);
-}
-
-function refreshConfig(category) {
-  const host = document.getElementById(`config-${category}`);
-  const model = modelByKey(DRAFT[category].model);
-  host.innerHTML = stepHeader(3, 'Model configuration',
-    'Only the parameters this exact model documents.') + renderParams(category);
-  markDirty(category);
-  lucide.createIcons();
-}
-
-/* ── Save ────────────────────────────────────────────────────────────────── */
-
-function saveBar(category) {
-  const draft = DRAFT[category];
-  const model = modelByKey(draft.model);
-  const meta  = providerMeta(draft.provider);
-  const hasKey = (CFG.providers[draft.provider] || {}).has_key;
+/* Step 4 — test */
+function testSection(cat) {
+  const d = S.drafts[cat];
+  const model = modelByKey(d.model);
+  const t = S.test[cat];
+  const pState = d.provider ? providerState(d.provider) : null;
+  const h = d.provider ? health(d.provider) : {};
+  const blocked = ['insufficient_credits', 'invalid_key'].includes(h.state);
+  const noKey = d.provider && !keyInfo(d.provider).has_key;
+  const cost = model ? (model.category === 'image' ? 'Submits one real 1K, lowest-quality test image — spends one low-tier image.'
+    : 'Sends one real 16-token request — spends a few tokens.') : '';
+  const running = t && t.state === 'running';
+  let result = '';
+  if (t && t.state !== 'running' && t.model === d.model) {
+    const tone = t.state === 'ok' ? 'ok' : t.skipped ? 'warn' : 'bad';
+    result = `<div class="notice ${tone} result fade-in" role="status">${icon(tone === 'ok' ? 'check-circle-2' : 'x-circle')}<div class="min-w-0">
+        <div>${esc(t.message || '')}</div>
+        <div class="kv">${t.protocol ? `<span>Protocol: ${esc(t.protocol)}</span>` : ''}${t.latency_ms ? `<span>Latency: ${esc(fmtNum(t.latency_ms, 0))} ms</span>` : ''}
+          ${!t.ok && t.category ? `<span>Error type: ${esc(t.category)}</span>` : ''}${t.request_id ? `<span>Request id: <code>${esc(t.request_id)}</code></span>` : ''}
+          ${t.task_id ? `<span>Task: <code>${esc(t.task_id)}</code></span>` : ''}<span>${esc(rel(t.at))}</span></div>
+        ${t.sig !== stable(coerced(cat)) ? '<div class="kv"><span>Parameters changed since this test — test again to check them.</span></div>'
+          : t.draft ? '<div class="kv"><span>Tested the unsaved settings shown above — save to keep them.</span></div>' : ''}</div></div>`;
+  }
   return `
-    <div class="save-bar" id="savebar-${esc(category)}">
-      <div class="text-[11px] text-muted flex items-center gap-2 flex-wrap">
-        <i data-lucide="route" class="w-3.5 h-3.5 text-accent"></i>
-        <span>${esc(meta.label)} → ${esc(model.name)} →
-          <code class="inline">${esc(model.wire_model)}</code></span>
-        ${hasKey ? '' : `<span class="pill pill-warn">Add the ${esc(meta.label)} key above</span>`}
-      </div>
-      <div class="flex items-center gap-2">
-        <span class="text-[11px] text-muted" id="dirty-${esc(category)}">
-          ${draft.dirty ? 'Unsaved changes' : ''}
-        </span>
-        <button class="btn btn-ghost" onclick="resetDefaults('${esc(category)}')">
-          <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i> Defaults
-        </button>
-        <button class="btn btn-primary" id="save-${esc(category)}"
-                onclick="saveCategory('${esc(category)}')">
-          <i data-lucide="save" class="w-3.5 h-3.5"></i> Save configuration
-        </button>
-      </div>
+    <div class="test-box">
+      <div class="min-w-0"><div class="num" style="font-size:11px;font-weight:600;color:var(--accent-2);letter-spacing:.06em;text-transform:uppercase">Step 4</div>
+        <div class="aa-h3">Test</div>
+        <p class="muted" style="font-size:12px">${model ? `Runs this exact configuration — including unsaved changes — against ${esc(providerMeta(d.provider).label)}. ${esc(cost)}` : 'Choose a model to test it.'}</p></div>
+      <button class="aa-btn aa-btn-secondary" data-action="test-task" data-cat="${esc(cat)}"
+        ${!model || noKey || blocked || running || Object.keys(S.invalid[cat] || {}).length ? 'disabled' : ''}
+        title="${esc(noKey ? 'Add an API key first' : blocked ? (pState?.detail || 'Provider blocked') : cost)}">
+        ${icon(running ? 'loader-2' : 'flask-conical', running ? 'spin' : '')} ${running ? 'Testing…' : 'Test model'}</button>
+    </div>
+    ${noKey ? `<div class="notice warn mt-3">${icon('key-round')}<span>No ${esc(providerMeta(d.provider).label)} API key saved. <button class="aa-link" data-action="go-providers" data-provider="${esc(d.provider)}">Add it under Providers</button>.</span></div>` : ''}
+    ${blocked ? `<div class="notice bad mt-3">${icon('alert-octagon')}<span>${esc(pState?.detail || '')}</span></div>` : ''}
+    ${result}`;
+}
+
+/* Step 5 — save */
+function saveBar(cat) {
+  const d = S.drafts[cat];
+  const model = modelByKey(d.model);
+  const p = d.provider ? providerMeta(d.provider) : null;
+  const proto = protocolOf(model, d.params);
+  const sv = S.save[cat] || { state: 'saved' };
+  const dirty = isDirty(cat);
+  const nInvalid = Object.keys(S.invalid[cat] || {}).length;
+  let state = sv.state;
+  if (state === 'saved' && dirty) state = 'dirty';
+  if (state === 'dirty' && !dirty) state = 'saved';
+  if (nInvalid && state !== 'saving') state = 'invalid';
+  const STATES = {
+    saved:   ['idle', 'check', 'All changes saved'],
+    dirty:   ['dirty', 'circle-dot', 'Unsaved changes'],
+    saving:  ['idle', 'loader-2', 'Saving…'],
+    success: ['ok', 'check-circle-2', sv.message || 'Saved'],
+    invalid: ['bad', 'alert-circle', `Fix ${nInvalid} field${nInvalid === 1 ? '' : 's'} before saving`],
+    error:   ['bad', 'x-circle', `Save failed — ${sv.message || 'unknown error'}`],
+  };
+  const [tone, ic, text] = STATES[state] || STATES.saved;
+  const canSave = !!(model && d.provider) && (dirty || state === 'error') && !nInvalid && state !== 'saving'
+    && !(model.dynamic && model.catalog && model.catalog.listed === false);
+  return `
+    <div class="route min-w-0">${p ? `<span class="dot" style="background:${esc(p.accent)}"></span><span>${esc(p.label)}</span>` : '<span class="faint">No provider</span>'}
+      ${icon('chevron-right')}<span>${model ? esc(model.name) : '<span class="faint">No model</span>'}</span>
+      ${proto ? `${icon('chevron-right')}<span>${esc(proto.label)}</span>` : ''}</div>
+    <div class="flex items-center gap-2 flex-wrap">
+      <span class="save-state ${tone}" role="status" aria-live="polite">${icon(ic, state === 'saving' ? 'spin' : '')}<span>${esc(text)}</span></span>
+      <button class="aa-btn aa-btn-ghost" data-action="discard" data-cat="${esc(cat)}" ${dirty && state !== 'saving' ? '' : 'disabled'}>Discard</button>
+      <button class="aa-btn aa-btn-primary" data-action="save" data-cat="${esc(cat)}" ${canSave ? '' : 'disabled'}>
+        ${icon('save')} Save configuration</button>
     </div>`;
 }
 
-function markDirty(category) {
-  DRAFT[category].dirty = true;
-  const el = document.getElementById(`dirty-${category}`);
-  if (el) el.textContent = 'Unsaved changes';
+/* ── Providers ───────────────────────────────────────────────────────────── */
+
+function renderProviders() {
+  const host = document.getElementById('panel-providers');
+  host.innerHTML = `
+    <div class="notice info mb-4">${icon('lock')}<span>Keys are stored per workspace on the server and never sent back to the browser — only the last four characters are shown. <b>Test connection</b> is free; <b>Test model</b> spends a few credits.</span></div>
+    <div class="aa-grid-2">${S.reg.providers.map(providerCard).join('')}</div>`;
 }
 
-function resetDefaults(category) {
-  const model = modelByKey(DRAFT[category].model);
-  const out = {};
-  model.params.forEach((p) => { if (!p.unavailable) out[p.key] = p.default; });
-  DRAFT[category].params = out;
-  refreshConfig(category);
-  showToast('Reset to the documented defaults — not saved yet.', 'info');
+function providerCard(p) {
+  const k = keyInfo(p.id);
+  const h = health(p.id);
+  const st = providerState(p.id);
+  const t = lastTest(p.id);
+  const cats = (p.categories || []).map((c) => `<span class="chip">${c === 'chat' ? 'Chat' : 'Image'}</span>`).join('');
+  const replacing = S.replacing.has(p.id) || !k.has_key;
+  const busyT = S.busy.has(`test:${p.id}`), busyM = S.busy.has(`model:${p.id}`), busyK = S.busy.has(`key:${p.id}`);
+  const blockedModel = ['insufficient_credits', 'invalid_key'].includes(h.state);
+  const acct = h.account || {};
+  const scope = h.scope === 'key' ? 'Key quota' : 'Balance';
+  const usedBy = S.reg.categories.filter((c) => {
+    const m = modelByKey((S.cfg.categories[c.id] || {}).model);
+    return m && m.provider === p.id;
+  }).map((c) => c.label);
+  const listed = (p.dynamic_models || []).includes('chat');
+  const c = catalogOf(p.id);
+  return `
+    <article class="aa-card prov fade-in" id="prov-${esc(p.id)}" aria-labelledby="prov-h-${esc(p.id)}">
+      <div class="aa-card-h">
+        <div class="min-w-0">
+          <div class="flex items-center gap-2 flex-wrap"><span class="dot" style="background:${esc(p.accent)}"></span>
+            <h3 class="aa-h2" id="prov-h-${esc(p.id)}">${esc(p.label)}</h3>${cats}</div>
+          <p class="muted mt-1" style="font-size:12px">${esc(p.tagline)}</p>
+        </div>
+        ${pill(st)}
+      </div>
+      <div class="aa-card-b space-y-3">
+        <div class="bal">
+          <div class="tile"><div class="aa-label">${esc(scope)}</div><div class="v">${h.credits === null || h.credits === undefined ? '<span class="faint" style="font-size:13px">Unknown</span>' : `${esc(fmtNum(h.credits))}`}</div>
+            <div class="faint" style="font-size:11px">${h.credits === null || h.credits === undefined ? 'Test connection to read it' : 'credits'}</div></div>
+          <div class="tile"><div class="aa-label">Checked</div><div class="v" style="font-size:13px">${esc(rel(h.checked_at))}</div>
+            <div class="faint" style="font-size:11px">${h.checked_at ? esc(absTime(h.checked_at)) : 'Live reads are cached 5 min'}</div></div>
+          <div class="tile"><div class="aa-label">Last test</div><div class="v" style="font-size:13px">${t ? (t.ok ? '<span style="color:#4ade80">Passed</span>' : '<span class="muted">Not passing</span>') : '<span class="faint">Never</span>'}</div>
+            <div class="faint" style="font-size:11px">${t ? esc(rel(t.checked_at)) : '—'}</div></div>
+        </div>
+        ${acct.unlimited_quota !== undefined || acct.key_unlimited !== undefined || acct.used_credits !== undefined ? `
+          <div class="kv">${acct.key_unlimited ? '<span class="chip">Key has no quota limit — account balance shown</span>' : ''}
+            ${acct.unlimited_quota === true ? '<span class="chip">Unlimited quota</span>' : ''}
+            ${acct.used_credits !== undefined ? `<span>Used: ${esc(fmtNum(acct.used_credits))} credits</span>` : ''}
+            ${acct.remain_balance !== undefined && acct.remain_balance >= 0 ? `<span>Remaining balance: ${esc(fmtNum(acct.remain_balance))}</span>` : ''}
+            ${acct.used_balance !== undefined ? `<span>Used balance: ${esc(fmtNum(acct.used_balance))}</span>` : ''}</div>` : ''}
+        ${replacing ? `
+          <form class="keyrow" data-form="key" data-provider="${esc(p.id)}" autocomplete="off">
+            <label class="sr-only" for="key-${esc(p.id)}">${esc(p.key_label || p.label + ' API key')}</label>
+            <input class="aa-input" style="flex:1 1 200px" type="password" id="key-${esc(p.id)}" name="api_key" autocomplete="new-password" spellcheck="false"
+                   placeholder="${k.has_key ? 'Paste the new key to replace ' + esc(k.key_hint) : 'Paste your ' + esc(p.label) + ' API key'}">
+            <button class="aa-btn aa-btn-primary" type="submit" ${busyK ? 'disabled' : ''}>${icon(busyK ? 'loader-2' : 'save', busyK ? 'spin' : '')} ${k.has_key ? 'Replace' : 'Save key'}</button>
+            ${k.has_key ? `<button class="aa-btn aa-btn-ghost" type="button" data-action="cancel-replace" data-provider="${esc(p.id)}">Cancel</button>` : ''}
+          </form>` : `
+          <div class="keyrow">
+            <div class="masked">${icon('key-round')}<span class="mono">••••••••${esc((k.key_hint || '').replace('…', ''))}</span></div>
+            <button class="aa-btn aa-btn-ghost" data-action="replace-key" data-provider="${esc(p.id)}">${icon('replace')} Replace</button>
+            <button class="aa-btn aa-btn-danger" data-action="remove-key" data-provider="${esc(p.id)}" aria-label="Remove the ${esc(p.label)} key">${icon('trash-2')} Remove</button>
+          </div>`}
+        ${listed ? `<div>${catalogBar(p.id)}</div>` : ''}
+        <div class="flex items-center justify-between gap-2 flex-wrap">
+          <div class="flex gap-2 flex-wrap">
+            <button class="aa-btn aa-btn-secondary aa-btn-sm" data-action="test-connection" data-provider="${esc(p.id)}" ${k.has_key && !busyT ? '' : 'disabled'}
+                    title="Checks the key, the balance${listed ? ' and the model list' : ''} — costs nothing">${icon(busyT ? 'loader-2' : 'plug-zap', busyT ? 'spin' : '')} ${busyT ? 'Testing…' : 'Test connection'}</button>
+            <button class="aa-btn aa-btn-ghost aa-btn-sm" data-action="test-provider-model" data-provider="${esc(p.id)}" ${k.has_key && !blockedModel && !busyM ? '' : 'disabled'}
+                    title="${esc(blockedModel ? 'Blocked — resolve the provider state first' : 'Sends one tiny real request with the model this workspace uses — spends a few credits')}">${icon(busyM ? 'loader-2' : 'flask-conical', busyM ? 'spin' : '')} ${busyM ? 'Testing…' : 'Test model'}</button>
+          </div>
+          <a class="aa-link" href="${esc(p.docs_url)}" target="_blank" rel="noopener">API docs ${icon('external-link')}</a>
+        </div>
+        <p class="faint" style="font-size:11.5px">${usedBy.length ? `Used by ${esc(usedBy.join(' and '))}.` : 'Not used by any task.'}${st.detail && st.tone !== 'idle' ? ` ${esc(st.detail)}` : ''}</p>
+      </div>
+    </article>`;
 }
 
-async function saveCategory(category) {
-  const draft = DRAFT[category];
-  const btn = document.getElementById(`save-${category}`);
+/* ── Activity ────────────────────────────────────────────────────────────── */
 
-  withBusy(btn, 'Saving…', async () => {
-    const res = await fetch('/api/ai/config', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        category, provider: draft.provider,
-        model: draft.model, params: draft.params,
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'Save failed');
+const CALL_RE = /^llm provider=(\S+) model=(\S+) op=(\S+) attempt=(\S+)(?: protocol=(\S+))?(?: contest=(\d+))?(?: project=(\d+))? status=(ok|error) latency_ms=(\S+)(.*)$/;
 
-    // Adopt the server's validated values — it clamps and drops.
-    draft.params = data.params;
-    draft.dirty = false;
-    CFG.categories[category] = {
-      provider: draft.provider, model: draft.model,
-      params: data.params,
-      all_params: { ...(CFG.categories[category].all_params || {}),
-                    [draft.model]: data.params },
-      configured: data.has_key,
-    };
-    (data.warnings || []).forEach((w) => showToast(w, 'warning'));
-    showToast(data.message, 'success');
-    renderOverview();
-    renderCategory(REG.categories.find((c) => c.id === category));
-    lucide.createIcons();
-  });
+function eventRow(e) {
+  const m = CALL_RE.exec(e.message || '');
+  let body;
+  if (m) {
+    const [, prov, model, op, attempt, protocol, contest, project, status, latency, rest] = m;
+    const toks = /tokens_in=(\S+) tokens_out=(\S+)/.exec(rest || '');
+    const rid = /request_id=([^\s\]]+)/.exec(rest || '');
+    const errText = status === 'error' ? rest.trim().replace(/\s*\[category=.*$/, '') : '';
+    const cat = /category=(\w+)/.exec(rest || '');
+    body = `<div class="flex gap-1.5 flex-wrap items-center">
+        <span class="chip">${esc(providerMeta(prov).label)}</span><code class="tag">${esc(model)}</code>
+        <span class="chip">${esc(op.replace(/_/g, ' '))}</span>${protocol ? `<span class="chip on">${esc(protocol.replace(/_/g, ' '))}</span>` : ''}
+        <span class="chip ${status === 'ok' ? '' : 'warn'}">${status === 'ok' ? 'ok' : esc(cat ? cat[1] : 'error')}</span>
+        <span class="faint">${esc(latency)} ms · attempt ${esc(attempt)}${toks ? ` · ${esc(toks[1])} in / ${esc(toks[2])} out` : ''}${contest ? ` · contest ${esc(contest)}` : ''}${project ? ` · project ${esc(project)}` : ''}</span></div>
+      ${errText ? `<div class="mt-1" style="color:#fca5a5">${esc(errText)}</div>` : ''}${rid ? `<div class="faint mt-0.5 mono" style="font-size:11px">request ${esc(rid[1])}</div>` : ''}`;
+  } else {
+    body = esc(e.message);
+  }
+  const d = new Date(e.created_at);
+  const time = Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return `<div class="ev"><div class="t" title="${esc(Number.isNaN(d.getTime()) ? '' : d.toLocaleString())}">${esc(time)}<div style="font-size:10.5px">${esc(rel(e.created_at))}</div></div>
+    <div class="lvl ${esc(e.level)}">${esc(e.level)}</div><div class="m">${body}</div></div>`;
 }
 
-/* ── Helpers ─────────────────────────────────────────────────────────────── */
+function renderActivity() {
+  const host = document.getElementById('panel-activity');
+  const events = S.activity;
+  const f = S.activityFilter;
+  const filtered = (events || []).filter((e) => f === 'all'
+    || (f === 'problems' && (e.level === 'WARNING' || e.level === 'ERROR'))
+    || (f === 'calls' && e.message.startsWith('llm provider='))
+    || (f === 'changes' && !e.message.startsWith('llm provider=')));
+  const diag = S.reg.providers.filter((p) => keyInfo(p.id).has_key).map((p) => {
+    const h = health(p.id); const t = lastTest(p.id);
+    return `<tr><td><span class="inline-flex items-center gap-2"><span class="dot" style="background:${esc(p.accent)}"></span>${esc(p.label)}</span></td>
+      <td>${pill(providerState(p.id))}</td>
+      <td class="hide-sm">${h.blocked ? `<span style="color:#fca5a5">${esc(h.blocked.category || '')}</span> <span class="faint">until ${esc(absTime(h.blocked.until))}</span>` : '<span class="faint">closed</span>'}</td>
+      <td class="hide-sm faint">${t ? esc(`${t.ok ? 'passed' : 'failed'} ${rel(t.checked_at)}${t.latency_ms ? ` · ${t.latency_ms} ms` : ''}`) : 'never'}</td></tr>`;
+  }).join('');
+  host.innerHTML = `
+    <div class="aa-card mb-4" style="overflow:hidden">
+      <div class="aa-card-h"><div><h3 class="aa-h2">Diagnostics</h3>
+        <p class="muted" style="font-size:12px">The circuit breaker opens on account-wide failures (billing, bad key) and fails calls locally until it clears.</p></div></div>
+      ${diag ? `<div style="overflow-x:auto"><table class="ph-table"><thead><tr><th>Provider</th><th>Status</th><th class="hide-sm">Breaker</th><th class="hide-sm">Last test</th></tr></thead><tbody>${diag}</tbody></table></div>`
+        : `<div class="empty">${icon('key-round')}No provider keys saved yet.</div>`}
+    </div>
+    <div class="aa-card" style="overflow:hidden">
+      <div class="aa-card-h" style="flex-wrap:wrap">
+        <div><h3 class="aa-h2">Recent AI activity</h3><p class="muted" style="font-size:12px">Per-attempt call records, tests and configuration changes for this workspace. Prompts and keys are never logged.</p></div>
+        <div class="flex gap-2 items-center flex-wrap">
+          <div class="seg" role="group" aria-label="Filter activity">${[['all', 'All'], ['problems', 'Problems'], ['calls', 'Calls'], ['changes', 'Changes']]
+            .map(([v, l]) => `<button type="button" aria-pressed="${f === v}" data-action="activity-filter" data-value="${v}">${l}</button>`).join('')}</div>
+          <button class="aa-btn aa-btn-ghost aa-btn-sm" data-action="reload-activity">${icon('refresh-cw', S.busy.has('activity') ? 'spin' : '')} Refresh</button>
+        </div>
+      </div>
+      <div aria-live="polite">${events === null ? '<div class="aa-card-b"><div class="skel" style="height:120px"></div></div>'
+        : filtered.length ? filtered.map(eventRow).join('') : `<div class="empty">${icon('inbox')}No matching events yet.</div>`}</div>
+    </div>`;
+}
 
-async function withBusy(btn, label, fn, always) {
-  if (!btn) return;
-  const original = btn.innerHTML;
-  btn.disabled = true;
-  btn.innerHTML = `<i data-lucide="loader-2" class="w-3.5 h-3.5 animate-spin"></i> ${label}`;
-  lucide.createIcons({ nodes: [btn] });
+async function loadActivity() {
+  S.busy.add('activity');
   try {
-    await fn();
-  } catch (err) {
-    showToast(err.message || String(err), 'error');
+    const res = await fetch('/api/ai/activity?limit=120');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    S.activity = data.events || [];
+  } catch (e) {
+    S.activity = S.activity || [];
+    toast(`Could not load activity: ${e.message}`, 'error');
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = original;
-    lucide.createIcons({ nodes: [btn] });
-    if (always) always();
+    S.busy.delete('activity');
+    if (S.tab === 'activity') { renderActivity(); icons(); }
   }
 }
 
-load();
+/* ── Actions ─────────────────────────────────────────────────────────────── */
+
+async function api(url, opts = {}) {
+  const res = await fetch(url, {
+    method: opts.method || 'GET',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : undefined,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+function pickProvider(cat, pid) {
+  const d = S.drafts[cat];
+  if (d.provider === pid) return;
+  d.provider = pid;
+  const saved = S.cfg.categories[cat] || {};
+  const savedModel = modelByKey(saved.model);
+  const first = (savedModel && savedModel.provider === pid) ? savedModel : modelsOf(pid, cat)[0];
+  d.model = first ? first.key : null;
+  d.params = first ? paramsFor(cat, first.key) : {};
+  S.invalid[cat] = {}; S.notes[cat] = [];
+  S.query[cat] = ''; S.family[cat] = 'all';
+  renderTaskPanel(); refreshChrome();
+}
+
+function pickModel(cat, key) {
+  const d = S.drafts[cat];
+  if (d.model === key) return;
+  d.model = key;
+  d.params = paramsFor(cat, key);
+  S.invalid[cat] = {}; S.notes[cat] = [];
+  refreshSection('sec-model', modelSection(cat));
+  refreshSection('sec-params', paramsSection(cat));
+  refreshSection('sec-test', testSection(cat));
+  refreshChrome();
+  maybeLoadPricing(cat);
+}
+
+function onParam(el, { rerender = false } = {}) {
+  const cat = el.dataset.cat, key = el.dataset.param;
+  const d = S.drafts[cat];
+  const spec = (modelByKey(d.model)?.params || []).find((p) => p.key === key);
+  if (!spec) return;
+  let v = el.value;
+  if (spec.type === 'int' || spec.type === 'float') {
+    const n = spec.type === 'int' ? Number(v) : parseFloat(v);
+    v = (v === '' || Number.isNaN(n)) ? v : n;
+  } else if (spec.type === 'select') {
+    // Keep the option's own type (a numeric enum must not become "1").
+    const opt = spec.options.find((o) => String(o.value) === v);
+    if (opt) v = opt.value;
+  }
+  d.params[key] = v;
+  S.invalid[cat] = validate(cat);
+  if (S.save[cat]?.state === 'error' || S.save[cat]?.state === 'success') S.save[cat] = { state: 'saved' };
+  if (rerender) {
+    const focusId = el.id;
+    refreshSection('sec-params', paramsSection(cat));
+    if (spec.key === 'protocol') { refreshSection('sec-model', modelSection(cat)); }
+    refreshSection('sec-test', testSection(cat));
+    const again = document.getElementById(focusId);
+    if (again) again.focus();
+  } else {
+    const err = S.invalid[cat][key];
+    el.classList.toggle('is-invalid', !!err);
+    const box = el.parentElement;
+    let msg = box.querySelector('.err');
+    if (err && !msg) { box.insertAdjacentHTML('beforeend', `<div class="err" role="alert">${icon('alert-circle', 'w-3.5 h-3.5')}${esc(err)}</div>`); }
+    else if (err && msg) { msg.lastChild.textContent = err; }
+    else if (!err && msg) { msg.remove(); }
+    refreshSection('sec-test', testSection(cat));
+  }
+  refreshChrome();
+}
+
+function resetDefaults(cat) {
+  const d = S.drafts[cat];
+  d.params = defaultsOf(modelByKey(d.model));
+  S.invalid[cat] = {}; S.notes[cat] = [];
+  refreshSection('sec-params', paramsSection(cat));
+  refreshSection('sec-test', testSection(cat));
+  refreshChrome();
+  toast('Reset to the documented defaults — not saved yet.', 'info');
+}
+
+function discard(cat) {
+  resetDraft(cat);
+  S.notes[cat] = [];
+  renderTaskPanel(); refreshChrome();
+  toast('Changes discarded.', 'info');
+}
+
+async function save(cat) {
+  S.invalid[cat] = validate(cat);
+  if (Object.keys(S.invalid[cat]).length) {
+    S.save[cat] = { state: 'invalid' };
+    refreshSection('sec-params', paramsSection(cat)); refreshChrome();
+    const adv = document.querySelector(`details[data-adv="${cat}"]`);
+    if (adv && [...adv.querySelectorAll('.is-invalid')].length) adv.open = true;
+    return;
+  }
+  const d = S.drafts[cat];
+  S.save[cat] = { state: 'saving' };
+  refreshChrome();
+  try {
+    const data = await api('/api/ai/config', { method: 'POST',
+      body: { category: cat, provider: d.provider, model: d.model, params: coerced(cat) } });
+    const model = modelByKey(d.model);
+    d.params = { ...defaultsOf(model), ...data.params };
+    const prev = S.cfg.categories[cat] || {};
+    S.cfg.categories[cat] = { ...prev, provider: d.provider, model: d.model, params: data.params,
+      all_params: { ...(prev.all_params || {}), [d.model]: data.params }, configured: data.has_key,
+      listed: model.dynamic ? true : null, resolvable: true };
+    S.notes[cat] = data.warnings || [];
+    S.save[cat] = { state: 'success', message: data.message };
+    toast(data.message, 'success');
+    setTimeout(() => { if (S.save[cat]?.state === 'success') { S.save[cat] = { state: 'saved' }; if (S.tab === 'tasks' && S.task === cat) refreshChrome(); } }, 3500);
+  } catch (e) {
+    S.save[cat] = { state: 'error', message: e.message };
+    toast(`Save failed: ${e.message}`, 'error');
+  }
+  if (S.tab === 'tasks' && S.task === cat) {
+    refreshSection('sec-params', paramsSection(cat));
+    refreshChrome();
+  }
+}
+
+async function testTask(cat) {
+  const d = S.drafts[cat];
+  const dirty = isDirty(cat);
+  const sig = stable(coerced(cat));
+  S.test[cat] = { state: 'running', model: d.model, sig };
+  refreshSection('sec-test', testSection(cat)); icons();
+  try {
+    const data = await api('/api/ai/test-model', { method: 'POST',
+      body: { provider: d.provider, model: d.model, category: cat, params: coerced(cat) } });
+    S.test[cat] = { ...data, state: data.ok ? 'ok' : 'fail', model: d.model, sig, at: Date.now() / 1000, draft: dirty };
+    S.cfg.status[d.provider] = { ok: !!data.ok, message: data.message, checked_at: Date.now() / 1000, latency_ms: data.latency_ms };
+    await refreshHealth(d.provider);
+  } catch (e) {
+    S.test[cat] = { state: 'fail', model: d.model, sig, message: e.message, at: Date.now() / 1000 };
+  }
+  if (S.tab === 'tasks') { refreshSection('sec-test', testSection(cat)); refreshSection('sec-provider', providerSection(cat)); refreshChrome(); }
+}
+
+async function refreshHealth(pid) {
+  try { S.cfg.health[pid] = await api(`/api/ai/balance?provider=${encodeURIComponent(pid)}`); } catch (_) {}
+}
+
+async function refreshCatalog(pid, { quiet = false } = {}) {
+  const busyKey = `catalog:${pid}`;
+  if (S.busy.has(busyKey)) return;
+  S.busy.add(busyKey); render();
+  try {
+    const data = await api(`/api/ai/catalog/${encodeURIComponent(pid)}/refresh`, { method: 'POST' });
+    S.cfg.catalogs = S.cfg.catalogs || {};
+    S.cfg.catalogs[pid] = { fetched_at: data.fetched_at, stale: data.stale, count: data.count,
+      other_chat_models: data.other_chat_models,
+      last_error: data.last_error || (data.ok ? null : { message: data.message }) };
+    if (Array.isArray(data.models)) mergeListedModels(pid, data.models);
+    if (!data.ok) toast(data.message, 'error'); else if (!quiet) toast(data.message, 'success');
+    S.pricingRounds = 0;
+  } catch (e) {
+    toast(`Model list failed: ${e.message}`, 'error');
+  } finally {
+    S.busy.delete(busyKey);
+    render();
+  }
+}
+
+function maybeAutoCatalog(cat) {
+  const d = S.drafts[cat];
+  if (!d.provider || !isListed(d.provider, cat) || !keyInfo(d.provider).has_key) return;
+  const c = catalogOf(d.provider);
+  if (!c.fetched_at && !c.last_error && !S.busy.has(`catalog:${d.provider}`) && !S[`auto_${d.provider}`]) {
+    S[`auto_${d.provider}`] = true;          // once per page view — listing is free
+    refreshCatalog(d.provider, { quiet: true });
+  }
+}
+
+async function maybeLoadPricing(cat) {
+  const d = S.drafts[cat];
+  if (!d.provider || !isListed(d.provider, cat)) return;
+  const ids = modelsOf(d.provider, cat).map((m) => m.wire_model).filter((id) => !S.pricing[id]);
+  if (!ids.length || S.pricingRounds > 4 || S.busy.has('pricing')) return;
+  S.busy.add('pricing'); S.pricingRounds += 1;
+  try {
+    const data = await api(`/api/ai/catalog/${encodeURIComponent(d.provider)}/pricing`, { method: 'POST', body: { models: ids.slice(0, 60) } });
+    Object.assign(S.pricing, data.pricing || {});
+    // A published output limit only reaches a model's own spec (max tokens'
+    // bound and help) server-side; reload the listed specs when one arrives.
+    const gained = Object.values(data.pricing || {}).some((pr) => pr && pr.limits && pr.limits.max_output_tokens
+      && !((S.reg.models.find((m) => m.dynamic && m.wire_model === pr.model) || {}).limits || {}).max_output_tokens);
+    if (gained) {
+      try {
+        const listing = await api(`/api/ai/catalog/${encodeURIComponent(d.provider)}`);
+        if (Array.isArray(listing.models)) mergeListedModels(d.provider, listing.models);
+      } catch (_) { /* bounds are re-checked on save */ }
+    }
+    if (S.tab === 'tasks' && S.task === cat && S.drafts[cat].provider === d.provider) {
+      refreshSection('ms-results', modelResults(cat));
+      if (gained && !document.getElementById('sec-params')?.contains(document.activeElement)) {
+        S.invalid[cat] = validate(cat);
+        refreshSection('sec-params', paramsSection(cat));
+      }
+      icons();
+    }
+    if ((data.pending || []).length) setTimeout(() => maybeLoadPricing(cat), 1500);
+  } catch (_) { /* prices are informative only */ } finally { S.busy.delete('pricing'); }
+}
+
+async function saveKey(pid, input) {
+  const value = (input.value || '').trim();
+  if (!value) { toast('Paste a key first.', 'warning'); input.focus(); return; }
+  S.busy.add(`key:${pid}`); renderProviders(); icons();
+  try {
+    const data = await api('/api/ai/credentials', { method: 'POST', body: { provider: pid, api_key: value } });
+    S.cfg.providers[pid] = { has_key: true, key_hint: data.key_hint };
+    S.cfg.status[pid] = { ok: false, message: 'Key saved — not verified yet.', checked_at: Date.now() / 1000 };
+    S.cfg.health[pid] = { state: 'unknown', has_key: true };
+    S.replacing.delete(pid);
+    if (isListed(pid, 'chat')) { mergeListedModels(pid, []); S.cfg.catalogs[pid] = {}; }
+    toast(`${data.message} Checking it now (free)…`, 'success');
+    S.busy.delete(`key:${pid}`);
+    render();
+    await testConnection(pid);                 // free: balance, key, model list
+  } catch (e) {
+    toast(`Could not save the key: ${e.message}`, 'error');
+  } finally {
+    S.busy.delete(`key:${pid}`);
+    render();
+  }
+}
+
+async function removeKey(pid) {
+  const p = providerMeta(pid);
+  const used = S.reg.categories.filter((c) => (modelByKey((S.cfg.categories[c.id] || {}).model) || {}).provider === pid).map((c) => c.label);
+  const ok = await showConfirmModal(`Remove the ${p.label} key?`,
+    used.length ? `${used.join(' and ')} use${used.length === 1 ? 's' : ''} ${p.label} and will stop until a new key is saved.`
+                : `Nothing uses ${p.label} right now. The key is deleted from this workspace.`, 'Remove key');
+  if (!ok) return;
+  try {
+    await api(`/api/ai/credentials/${encodeURIComponent(pid)}`, { method: 'DELETE' });
+    S.cfg.providers[pid] = { has_key: false, key_hint: '' };
+    S.cfg.status[pid] = { ok: false, message: 'Key removed.', checked_at: Date.now() / 1000 };
+    S.cfg.health[pid] = { state: 'no_key' };
+    if (isListed(pid, 'chat')) { mergeListedModels(pid, []); S.cfg.catalogs[pid] = {}; }
+    for (const c of S.reg.categories) {
+      const m = modelByKey((S.cfg.categories[c.id] || {}).model);
+      if (m && m.provider === pid) S.cfg.categories[c.id].configured = false;
+    }
+    toast(`${p.label} key removed.`, 'info');
+  } catch (e) { toast(`Could not remove the key: ${e.message}`, 'error'); }
+  render();
+}
+
+async function testConnection(pid) {
+  S.busy.add(`test:${pid}`); render();
+  try {
+    const data = await api('/api/ai/test', { method: 'POST', body: { provider: pid } });
+    if (data.status) S.cfg.health[pid] = data.status;
+    if (data.provider_status) S.cfg.status[pid] = data.provider_status;
+    if (data.catalog) {
+      const cat = await api(`/api/ai/catalog/${encodeURIComponent(pid)}`);
+      S.cfg.catalogs[pid] = { fetched_at: cat.fetched_at, stale: cat.stale, count: cat.count, other_chat_models: cat.other_chat_models,
+        last_error: cat.last_error || (data.catalog.ok ? null : { message: data.catalog.message }) };
+      mergeListedModels(pid, cat.models || []);
+      S.pricingRounds = 0;
+    }
+    toast(data.message, data.ok ? 'success' : 'error');
+  } catch (e) { toast(`Connection test failed: ${e.message}`, 'error'); }
+  S.busy.delete(`test:${pid}`);
+  render();
+}
+
+async function testProviderModel(pid) {
+  S.busy.add(`model:${pid}`); render();
+  try {
+    const data = await api('/api/ai/test-model', { method: 'POST', body: { provider: pid } });
+    S.cfg.status[pid] = { ok: !!data.ok, message: data.message, checked_at: Date.now() / 1000, latency_ms: data.latency_ms };
+    await refreshHealth(pid);
+    toast(data.message, data.ok ? 'success' : (data.skipped ? 'warning' : 'error'));
+  } catch (e) { toast(`Model test failed: ${e.message}`, 'error'); }
+  S.busy.delete(`model:${pid}`);
+  render();
+}
+
+function goProviders(pid) {
+  setTab('providers');
+  if (pid) {
+    const el = document.getElementById(`prov-${pid}`);
+    if (el) { el.scrollIntoView({ behavior: 'smooth', block: 'start' }); el.style.boxShadow = '0 0 0 2px rgba(79,110,247,.55)'; setTimeout(() => { el.style.boxShadow = ''; }, 1600); }
+  }
+}
+
+/* ── Events (delegated — no inline handlers with interpolated strings) ──── */
+
+const root = document.getElementById('ai-root');
+
+root.addEventListener('click', (ev) => {
+  const el = ev.target.closest('[data-action]');
+  if (!el || el.disabled) return;
+  const { action, cat, provider, model, value } = el.dataset;
+  switch (action) {
+    case 'configure': S.task = cat; setTab('tasks'); break;
+    case 'go-providers': ev.preventDefault(); goProviders(provider); break;
+    case 'pick-task':
+      S.task = cat; history.replaceState(null, '', `#tasks/${cat}`); renderTasks(); icons(); break;
+    case 'pick-provider': pickProvider(cat, provider); break;
+    case 'pick-model': pickModel(cat, model); break;
+    case 'model-family':
+      S.family[cat] = value; refreshSection('sec-model', modelSection(cat)); icons();
+      document.querySelector(`[data-action="model-family"][data-value="${CSS.escape(value)}"]`)?.focus();
+      break;
+    case 'toggle-param': {
+      const next = el.getAttribute('aria-checked') !== 'true';
+      el.setAttribute('aria-checked', next ? 'true' : 'false');
+      S.drafts[el.dataset.cat].params[el.dataset.param] = next;
+      refreshChrome(); refreshSection('sec-test', testSection(el.dataset.cat)); icons();
+      break;
+    }
+    case 'reset-defaults': resetDefaults(cat); break;
+    case 'discard': discard(cat); break;
+    case 'save': save(cat); break;
+    case 'test-task': testTask(cat); break;
+    case 'refresh-catalog': refreshCatalog(provider); break;
+    case 'replace-key': S.replacing.add(provider); renderProviders(); icons(); document.getElementById(`key-${provider}`)?.focus(); break;
+    case 'cancel-replace': S.replacing.delete(provider); renderProviders(); icons(); break;
+    case 'remove-key': removeKey(provider); break;
+    case 'test-connection': testConnection(provider); break;
+    case 'test-provider-model': testProviderModel(provider); break;
+    case 'activity-filter': S.activityFilter = value; renderActivity(); icons(); break;
+    case 'reload-activity': loadActivity(); renderActivity(); icons(); break;
+  }
+});
+
+root.addEventListener('keydown', (ev) => {
+  const row = ev.target.closest('tr[data-action]');
+  if (row && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); row.click(); }
+});
+
+root.addEventListener('input', (ev) => {
+  const el = ev.target;
+  if (el.dataset.input === 'model-query') {
+    S.query[el.dataset.cat] = el.value;
+    refreshSection('ms-results', modelResults(el.dataset.cat)); icons();
+    return;
+  }
+  if (el.dataset.param && el.tagName !== 'SELECT') onParam(el);
+});
+
+root.addEventListener('change', (ev) => {
+  const el = ev.target;
+  if (el.dataset.param && el.tagName === 'SELECT') onParam(el, { rerender: true });
+});
+
+root.addEventListener('submit', (ev) => {
+  const form = ev.target.closest('form[data-form="key"]');
+  if (!form) return;
+  ev.preventDefault();
+  saveKey(form.dataset.provider, form.querySelector('input[name="api_key"]'));
+});
+
+root.addEventListener('toggle', (ev) => {
+  const d = ev.target;
+  if (d.matches && d.matches('details[data-adv]')) S.advOpen[d.dataset.adv] = d.open;
+}, true);
+
+document.getElementById('tabs').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[role="tab"]');
+  if (b) setTab(b.dataset.tab);
+});
+document.getElementById('tabs').addEventListener('keydown', (ev) => {
+  const tabs = [...document.querySelectorAll('#tabs [role="tab"]')];
+  const i = tabs.findIndex((t) => t.dataset.tab === S.tab);
+  let j = null;
+  if (ev.key === 'ArrowRight') j = (i + 1) % tabs.length;
+  if (ev.key === 'ArrowLeft') j = (i - 1 + tabs.length) % tabs.length;
+  if (ev.key === 'Home') j = 0;
+  if (ev.key === 'End') j = tabs.length - 1;
+  if (j !== null) { ev.preventDefault(); setTab(tabs[j].dataset.tab, { focus: true }); }
+});
+
+window.addEventListener('beforeunload', (ev) => {
+  if (S.reg && S.reg.categories.some((c) => isDirty(c.id))) { ev.preventDefault(); ev.returnValue = ''; }
+});
+
+/* ── Boot ────────────────────────────────────────────────────────────────── */
+
+/** #overview | #tasks/<category> | #providers | #activity — bookmarkable, and
+ *  the back button / a pasted link switch views without a reload. */
+function routeFromHash() {
+  const [tab, sub] = (location.hash || '#overview').slice(1).split('/');
+  if (sub && S.reg.categories.some((c) => c.id === sub)) S.task = sub;
+  setTab(['overview', 'tasks', 'providers', 'activity'].includes(tab) ? tab : 'overview', { push: false });
+}
+window.addEventListener('hashchange', () => { if (S.reg) routeFromHash(); });
+
+(async function boot() {
+  try {
+    await load();
+    routeFromHash();
+  } catch (e) {
+    document.getElementById('panel-overview').innerHTML =
+      `<div class="notice bad">${icon('alert-octagon')}<span>Could not load the AI configuration: ${esc(e.message)}</span></div>`;
+    icons();
+  }
+})();
 </script>
 {% endblock %}

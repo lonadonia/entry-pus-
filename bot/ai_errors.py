@@ -403,13 +403,34 @@ _UPSTREAM_TYPE = re.compile(
     r"internal|server_error|upstream|gateway|unavailable|overloaded|api_error", re.I)
 
 
+# Anything shaped like a credential is masked before it can reach a log line, a
+# toast or the database. Gateways sometimes echo the key they refused
+# ("Incorrect API key provided: sk-…"); the operator never needs it back.
+_SECRET_SHAPES = re.compile(
+    r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"
+    r"|\b(?:sk|pk|rk|ak)-[A-Za-z0-9_-]{6,}"
+    r"|\b[A-Za-z0-9]{40,}\b")
+
+
+def redact(text) -> str:
+    """*text* with anything key-shaped replaced by a mask."""
+    if not text:
+        return text or ""
+
+    def _mask(match):
+        if match.group(1):
+            return match.group(1) + "[redacted]"
+        return "[redacted]"
+    return _SECRET_SHAPES.sub(_mask, str(text))
+
+
 def _mk(provider, model, category, message, *, retryable, scope, signals,
         http_status=None, retry_after=None, request_id=None) -> ProviderError:
     return ProviderError(
         provider=provider,
         model=model,
         category=category,
-        message=message or category.replace("_", " ").title(),
+        message=redact(message) or category.replace("_", " ").title(),
         retryable=retryable,
         scope=scope,
         http_status=http_status,
@@ -441,8 +462,10 @@ def parse_retry_after(headers: Any) -> Optional[float]:
 def request_id_from(headers: Any) -> Optional[str]:
     if not headers:
         return None
+    # x-oneapi-request-id: APIMart ("include … the response header
+    # x-oneapi-request-id" when reporting an issue).
     for name in ("x-request-id", "X-Request-Id", "request-id", "Request-Id",
-                 "x-requestid", "cf-ray"):
+                 "x-oneapi-request-id", "x-requestid", "cf-ray"):
         try:
             value = headers.get(name)
         except AttributeError:
@@ -541,8 +564,15 @@ def classify_exception(exc: BaseException, *, provider: str,
     text = str(exc)[:300] or type(exc).__name__
 
     if isinstance(exc, requests.exceptions.Timeout):
-        return _mk(provider, model, TIMEOUT, f"Request timed out: {text}",
-                   retryable=True, scope=REQUEST, signals=signals)
+        # Which phase timed out matters for billing: a CONNECT timeout never
+        # reached the provider, a READ timeout may have been served (and
+        # billed) upstream after we stopped waiting.
+        phase = ("connect" if isinstance(exc, requests.exceptions.ConnectTimeout)
+                 else "read")
+        error = _mk(provider, model, TIMEOUT, f"Request timed out: {text}",
+                    retryable=True, scope=REQUEST, signals=signals)
+        error.details = dict(error.details or {}, timeout_phase=phase)
+        return error
     if isinstance(exc, requests.exceptions.SSLError):
         # A TLS failure is an environment problem; hammering it never helps.
         return _mk(provider, model, NETWORK, f"TLS error: {text}",
@@ -569,6 +599,7 @@ def parsing_error(provider: str, model: Optional[str], message: str,
     Used instead of silently returning None, which is how an unreadable answer
     used to surface as the meaningless "Analysis returned None".
     """
+    message = redact(message)
     return ProviderError(
         provider=provider, model=model, category=PARSING,
         message=f"APIDOT_RESPONSE_PARSE_ERROR: {message}" if provider == "apidot"
